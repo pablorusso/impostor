@@ -14,7 +14,6 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [name, setName] = useState('');
   const [state, setState] = useState<PlayerState | null>(null);
   const [joining, setJoining] = useState(false);
-  const [reveal, setReveal] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -67,12 +66,10 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
   async function startRound() {
     await fetch(`/api/game/${code}/start-round`, { method: 'POST' });
-    setReveal(false);
     setTimeout(refresh, 300);
   }
   async function nextRound() {
     await fetch(`/api/game/${code}/next-round`, { method: 'POST' });
-    setReveal(false);
     setTimeout(refresh, 300);
   }
   async function closeGame() {
@@ -84,7 +81,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   }
 
   const isRoundActive = !!state?.round;
-  const wordVisible = reveal && isRoundActive ? (state?.wordForPlayer === null ? 'Eres el IMPOSTOR' : state?.wordForPlayer) : null;
+  const wordVisible = isRoundActive ? (state?.wordForPlayer === null ? 'Eres el IMPOSTOR' : state?.wordForPlayer) : null;
 
   return (
     <div>
@@ -111,18 +108,15 @@ export default function GameLobby({ params }: { params: { code: string } }) {
             )}
             {state.isHost && !isRoundActive && playerId && (
               <div className="row" style={{marginTop:'0.5rem'}}>
-                <button onClick={startRound} disabled={state.game.players.length<3}>Iniciar ronda</button>
+                <button onClick={startRound} disabled={state.game.players.length<3}>Iniciar juego</button>
                 <button onClick={closeGame} style={{marginLeft:'auto',background:'#eee'}}>Finalizar juego</button>
               </div>
             )}
             {isRoundActive && (
               <div style={{marginTop:'1rem'}}>
-                {!reveal && <button onClick={()=>setReveal(true)}>Mostrar mi palabra</button>}
-                {reveal && (
-                  <div style={{padding:'1rem',border:'1px dashed #555',borderRadius:6,marginTop:'0.5rem',fontSize:'1.25rem',fontWeight:'bold'}}>
-                    {wordVisible ?? '...'}
-                  </div>
-                )}
+                <div style={{padding:'1rem',border:'1px dashed #555',borderRadius:6,marginTop:'0.5rem',fontSize:'1.25rem',fontWeight:'bold'}}>
+                  {wordVisible ?? '...'}
+                </div>
               </div>
             )}
             {!isRoundActive && playerId && <p className="muted">Esperando que el host inicie la ronda...</p>}
