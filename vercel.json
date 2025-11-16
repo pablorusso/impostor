@@ -1,0 +1,26 @@
+{
+  "functions": {
+    "app/api/**/*.ts": {
+      "maxDuration": 30
+    }
+  },
+  "headers": [
+    {
+      "source": "/api/game/(.*)/events",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        },
+        {
+          "key": "Connection", 
+          "value": "keep-alive"
+        },
+        {
+          "key": "X-Accel-Buffering",
+          "value": "no"
+        }
+      ]
+    }
+  ]
+}

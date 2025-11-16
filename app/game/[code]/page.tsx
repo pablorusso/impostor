@@ -26,9 +26,19 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const refresh = useCallback(async () => {
     if (!playerId) return;
     try {
-      const res = await fetch(`/api/game/${code}/state?pid=${playerId}`);
+      // Timeout más conservador para Vercel
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      
+      const res = await fetch(`/api/game/${code}/state?pid=${playerId}`, {
+        signal: controller.signal,
+        cache: 'no-store' // Evitar cache en Vercel
+      });
+      
+      clearTimeout(timeoutId);
+      
       if (res.status === 404) {
-        // Sala cerrada o no existe: limpiar completamente y redirigir a inicio.
+        // Sala cerrada o no existe: limpiar completamente y redirigir
         sessionStorage.clear();
         setState(null);
         setPlayerId(undefined);
@@ -38,33 +48,36 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         }
         return;
       }
+      
       if (res.ok) {
         const data = await res.json();
         // Verificar que los datos del jugador sean consistentes
         if (data && data.player && data.player.name) {
           setState(data);
         } else {
-          // Si los datos están corruptos, limpiar y recargar
-          sessionStorage.clear();
-          setPlayerId(undefined);
-          setState(null);
-          setName('');
-          // Recargar la página para empezar limpio
-          window.location.reload();
+          // Dar una segunda oportunidad antes de limpiar
+          console.warn('Invalid player data, retrying once...');
+          setTimeout(() => {
+            if (playerId) refresh();
+          }, 2000);
         }
       } else {
-        // Error del servidor, limpiar sesión
-        sessionStorage.clear();
-        setPlayerId(undefined);
-        setState(null);
-        setName('');
+        console.warn('Server error:', res.status, 'retrying...');
+        // Reintentar una vez antes de limpiar
+        setTimeout(() => {
+          if (playerId) refresh();
+        }, 2000);
       }
     } catch (error) {
-      // Error de red, limpiar sesión
-      sessionStorage.clear();
-      setPlayerId(undefined);
-      setState(null);
-      setName('');
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.warn('Request timeout, retrying...');
+      } else {
+        console.warn('Network error:', error);
+      }
+      // Reintentar en lugar de limpiar inmediatamente
+      setTimeout(() => {
+        if (playerId) refresh();
+      }, 3000);
     }
   }, [playerId, code]);
 
@@ -106,44 +119,89 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, [playerId, code]);
 
-  // Suscripción SSE para eventos del juego (elimina polling continuo)
+  // Suscripción SSE con fallback a polling para mejor compatibilidad
   const sseRef = useRef<EventSource | null>(null);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const [usePolling, setUsePolling] = useState(false);
+  
   useEffect(() => {
-    if (!playerId) return; // esperar a tener jugador (para refresh personalizado)
+    if (!playerId) return;
     refresh(); // carga inicial
-    const es = new EventSource(`/api/game/${code}/events`);
-    sseRef.current = es;
-    es.onmessage = (ev) => {
+    
+    // Intentar SSE primero, con fallback a polling
+    if (!usePolling) {
       try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === 'ping') return; // heartbeat
-        if (msg.type === 'game-close') {
-          sessionStorage.removeItem('playerId');
-          window.location.href = '/';
-          return;
+        const es = new EventSource(`/api/game/${code}/events`);
+        sseRef.current = es;
+        
+        let sseWorking = false;
+        const sseTimeout = setTimeout(() => {
+          if (!sseWorking) {
+            console.log('SSE timeout, switching to polling');
+            es.close();
+            setUsePolling(true);
+          }
+        }, 10000); // 10 segundos timeout
+        
+        es.onopen = () => {
+          sseWorking = true;
+          clearTimeout(sseTimeout);
+        };
+        
+        es.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'ping') return;
+            if (msg.type === 'game-close') {
+              sessionStorage.clear();
+              window.location.href = '/';
+              return;
+            }
+            if ([
+              'init',
+              'player-join', 
+              'round-start',
+              'round-next',
+              'round-end',
+              'next-turn'
+            ].includes(msg.type)) {
+              refresh();
+            }
+          } catch {}
+        };
+        
+        es.onerror = () => {
+          console.log('SSE error, switching to polling');
+          clearTimeout(sseTimeout);
+          es.close();
+          setUsePolling(true);
+        };
+        
+        return () => {
+          clearTimeout(sseTimeout);
+          es.close();
+          sseRef.current = null;
+        };
+      } catch (error) {
+        console.log('SSE not supported, using polling');
+        setUsePolling(true);
+      }
+    } else {
+      // Fallback: polling cada 3 segundos
+      const poll = () => {
+        refresh();
+      };
+      
+      pollingRef.current = setInterval(poll, 3000);
+      
+      return () => {
+        if (pollingRef.current) {
+          clearInterval(pollingRef.current);
+          pollingRef.current = null;
         }
-        // Para cualquier evento relevante refrescar estado individual
-        if ([
-          'init',
-          'player-join',
-          'round-start',
-          'round-next',
-          'round-end',
-          'next-turn'
-        ].includes(msg.type)) {
-          refresh();
-        }
-      } catch {}
-    };
-    es.onerror = () => {
-      // Fallback simple: cerrar SSE (el usuario puede recargar)
-      es.close();
-    };
-    return () => {
-      es.close();
-      sseRef.current = null;
-    };
-  }, [code, playerId, refresh]);
+      };
+    }
+  }, [code, playerId, refresh, usePolling]);
 
   // Detectar nueva ronda e iniciar animación
   useEffect(() => {

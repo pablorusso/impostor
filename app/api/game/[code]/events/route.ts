@@ -23,10 +23,17 @@ export async function GET(_: Request, { params }: { params: { code: string } }) 
         if (initial) {
           send({ type: 'init', code: code.toUpperCase(), timestamp: Date.now() });
         }
-        // Heartbeat
+        // Heartbeat más frecuente para Vercel/Safari
         heart = setInterval(() => {
-          send({ type: 'ping', timestamp: Date.now() });
-        }, 25000);
+          try {
+            send({ type: 'ping', timestamp: Date.now() });
+          } catch (error) {
+            // Si falla el heartbeat, cerrar la conexión
+            clearInterval(heart);
+            unsubscribe();
+            controller.close();
+          }
+        }, 15000); // Más frecuente para evitar timeouts
       },
       cancel() {
         clearInterval(heart);
@@ -36,9 +43,13 @@ export async function GET(_: Request, { params }: { params: { code: string } }) 
     {
       headers: {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-store',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no', // nginx (por si acaso)
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control',
+        'X-Accel-Buffering': 'no', // nginx
       },
     }
   );

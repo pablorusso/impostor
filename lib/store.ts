@@ -7,10 +7,25 @@ interface Store {
 }
 
 function getStore(): Store {
-  // In-memory singleton (NOT persistent). Suitable for short casual games.
+  // In-memory singleton con mejor persistencia para Vercel
   const g = globalThis as any;
   if (!g.__IMPOSTOR_STORE__) {
     g.__IMPOSTOR_STORE__ = { games: new Map<string, Game>() } as Store;
+    
+    // Cleanup automático de juegos viejos para liberar memoria
+    if (typeof setInterval !== 'undefined') {
+      setInterval(() => {
+        const now = Date.now();
+        const store = g.__IMPOSTOR_STORE__ as Store;
+        for (const [code, game] of store.games.entries()) {
+          const lastActivity = game.currentRound?.startedAt || 0;
+          // Limpiar juegos inactivos por más de 2 horas
+          if (now - lastActivity > 2 * 60 * 60 * 1000) {
+            store.games.delete(code);
+          }
+        }
+      }, 10 * 60 * 1000); // Check cada 10 minutos
+    }
   }
   return g.__IMPOSTOR_STORE__;
 }
