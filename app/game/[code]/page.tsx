@@ -838,7 +838,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               {state.isHost && !isRoundActive && playerId && (
                 <Stack direction="row" spacing={2} justifyContent="center" sx={{ mb: 2 }}>
                   <Button variant="contained" color="primary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3 }} onClick={startRound} disabled={state.game.players.length<3}>
-                    🎯 Iniciar juego
+                    🎯 Iniciar
                   </Button>
                 </Stack>
               )}
