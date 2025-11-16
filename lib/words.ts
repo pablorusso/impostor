@@ -47,7 +47,7 @@ export const WORD_CATEGORIES = {
     'radio', 'playlist', 'karaoke', 'baile', 'danza', 'coreografía', 'escenario', 'micrófono', 'amplificador', 'bocina'
   ],
   
-  cosas: [
+  objetos: [
     'mesa', 'silla', 'sofá', 'cama', 'lámpara', 'espejo', 'vaso', 'plato', 'cuchara', 'tenedor',
     'libro', 'lápiz', 'bolígrafo', 'cuaderno', 'teléfono', 'reloj', 'bolsa', 'zapato', 'camisa', 'pantalón',
     'sombrero', 'gafas', 'anillo', 'collar', 'jabón', 'toalla', 'cepillo', 'peine', 'tijeras', 'televisor',
@@ -71,6 +71,6 @@ export const DEFAULT_WORDS = [
   ...WORD_CATEGORIES.deportes.slice(0, 6),
   ...WORD_CATEGORIES.tecnologia.slice(0, 6),
   ...WORD_CATEGORIES.musica.slice(0, 6),
-  ...WORD_CATEGORIES.cosas.slice(0, 10),
+  ...WORD_CATEGORIES.objetos.slice(0, 10),
   ...WORD_CATEGORIES.otros.slice(0, 5)
 ];

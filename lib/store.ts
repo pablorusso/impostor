@@ -7,22 +7,71 @@ interface Store {
 }
 
 function getStore(): Store {
-  // Mejorar persistencia para Vercel usando técnicas documentadas
+  // Persistencia ultra-robusta para Vercel - múltiples estrategias de backup
   const g = globalThis as any;
   
-  // Usar una clave más específica y robusta
-  const storeKey = '__IMPOSTOR_GAME_STORE_V2__';
+  // Usar múltiples claves para redundancia
+  const storeKey = '__IMPOSTOR_GAME_STORE_V3__';
+  const backupKey = '__IMPOSTOR_BACKUP_STORE__';
   
   if (!g[storeKey]) {
-    console.log('[Store] Initializing new game store instance');
-    g[storeKey] = { 
-      games: new Map<string, Game>(),
-      lastAccess: Date.now(),
-      instanceId: Math.random().toString(36).substr(2, 9)
-    } as Store & { lastAccess: number; instanceId: string };
+    console.log('[Store] Initializing new ultra-robust game store instance');
     
-    // Cleanup más conservador para Vercel
+    // Intentar recuperar desde backup si existe
+    let restoredGames = new Map<string, Game>();
+    if (g[backupKey] && g[backupKey].games) {
+      try {
+        console.log('[Store] Attempting to restore from backup');
+        const backupData = g[backupKey];
+        restoredGames = new Map(backupData.games);
+        console.log(`[Store] Restored ${restoredGames.size} games from backup`);
+      } catch (error) {
+        console.warn('[Store] Failed to restore from backup:', error);
+      }
+    }
+    
+    g[storeKey] = { 
+      games: restoredGames,
+      lastAccess: Date.now(),
+      instanceId: Math.random().toString(36).substr(2, 9),
+      heartbeat: Date.now(),
+      saveCount: 0
+    } as Store & { lastAccess: number; instanceId: string; heartbeat: number; saveCount: number };
+    
+    // Sistema de backup y heartbeat para ultra-robustez
     if (typeof setInterval !== 'undefined') {
+      // Heartbeat más frecuente
+      const heartbeatInterval = setInterval(() => {
+        const store = g[storeKey] as Store & { heartbeat: number; saveCount: number };
+        if (!store) {
+          clearInterval(heartbeatInterval);
+          return;
+        }
+        store.heartbeat = Date.now();
+      }, 30 * 1000); // Cada 30 segundos
+      
+      // Backup automático
+      const backupInterval = setInterval(() => {
+        const store = g[storeKey] as Store & { saveCount: number };
+        if (!store || !store.games) {
+          clearInterval(backupInterval);
+          return;
+        }
+        
+        try {
+          // Crear backup de toda la data
+          g[backupKey] = {
+            games: Array.from(store.games.entries()),
+            timestamp: Date.now(),
+            saveCount: store.saveCount++
+          };
+          console.log(`[Store] Backup created (#${store.saveCount}) with ${store.games.size} games`);
+        } catch (error) {
+          console.error('[Store] Backup failed:', error);
+        }
+      }, 2 * 60 * 1000); // Backup cada 2 minutos
+      
+      // Cleanup conservador
       const cleanupInterval = setInterval(() => {
         const now = Date.now();
         const store = g[storeKey] as Store & { lastAccess: number };
@@ -32,31 +81,29 @@ function getStore(): Store {
           return;
         }
         
-        // Actualizar último acceso
         store.lastAccess = now;
         
-        // Limpiar juegos inactivos más agresivamente en Vercel
+        // Cleanup más conservador - solo juegos realmente viejos
         for (const [code, game] of store.games.entries()) {
           const lastActivity = Math.max(
             game.currentRound?.startedAt || 0,
-            game.players.reduce((latest, p) => {
-              // Usar timestamp del jugador si está disponible
-              return Math.max(latest, (p as any).lastSeen || 0);
-            }, 0)
+            game.players.reduce((latest, p) => Math.max(latest, (p as any).lastSeen || 0), 0),
+            (game as any).lastUpdate || 0
           );
           
-          // Reducir a 1 hora para evitar acumulación en Vercel
-          if (now - lastActivity > 60 * 60 * 1000) {
-            console.log(`[Store] Cleaning up inactive game: ${code}`);
+          // 2 horas para ser muy conservador
+          if (now - lastActivity > 2 * 60 * 60 * 1000) {
+            console.log(`[Store] Cleaning up very old game: ${code}`);
             store.games.delete(code);
           }
         }
-      }, 5 * 60 * 1000); // Check cada 5 minutos
+      }, 10 * 60 * 1000); // Check cada 10 minutos
     }
   }
   
-  const store = g[storeKey] as Store & { lastAccess: number; instanceId: string };
+  const store = g[storeKey] as Store & { lastAccess: number; instanceId: string; heartbeat: number };
   store.lastAccess = Date.now();
+  store.heartbeat = Date.now();
   
   return store;
 }
@@ -75,6 +122,11 @@ export function createGame(hostName: string, words?: string[]): { code: string; 
     players: [hostPlayer],
     words: (words && words.length > 0 ? words : DEFAULT_WORDS).map((w: string) => w.trim()).filter(Boolean),
   };
+  
+  // Añadir timestamp para tracking
+  (game as any).lastUpdate = Date.now();
+  (hostPlayer as any).lastSeen = Date.now();
+  
   store.games.set(code, game);
   return { code, hostId, playerId: hostId };
 }
@@ -85,7 +137,11 @@ export function joinGame(code: string, name: string): { playerId: string } | nul
   const existing = game.players.find((p: Player) => p.name.toLowerCase() === name.toLowerCase());
   if (existing) return { playerId: existing.id }; // Reuse
   const player: Player = { id: nanoid(), name: name.trim() };
+  (player as any).lastSeen = Date.now();
   game.players.push(player);
+  
+  // Actualizar timestamp del juego
+  (game as any).lastUpdate = Date.now();
   
   // Si hay una partida activa y ya existe un turnOrder, agregar el nuevo jugador al final
   if (game.currentRound && game.turnOrder) {
@@ -232,6 +288,17 @@ export function leaveGame(code: string, playerId: string): { ok: boolean; gameEn
 export function getState(code: string, playerId?: string): PlayerState | null {
   const game = getStore().games.get(code.toUpperCase());
   if (!game) return null;
+  
+  // Actualizar lastSeen del jugador si está especificado
+  if (playerId) {
+    const player = game.players.find(p => p.id === playerId);
+    if (player) {
+      (player as any).lastSeen = Date.now();
+    }
+  }
+  
+  // Actualizar timestamp del juego en cada acceso
+  (game as any).lastUpdate = Date.now();
   const player = playerId ? game.players.find((p: Player) => p.id === playerId) : undefined;
   const round = game.currentRound;
   let wordForPlayer: string | null | undefined = undefined;

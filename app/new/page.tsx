@@ -10,7 +10,7 @@ const CATEGORY_INFO = {
   deportes: { name: '⚽ Deportes', emoji: '⚽' },
   tecnologia: { name: '💻 Tecnología', emoji: '💻' },
   musica: { name: '🎵 Música', emoji: '🎵' },
-  cosas: { name: '🏠 Cosas', emoji: '🏠' },
+  objetos: { name: '🏠 Objetos', emoji: '🏠' },
   otros: { name: '✨ Otros', emoji: '✨' }
 };
 

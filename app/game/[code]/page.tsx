@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { PlayerState } from '../../../lib/types';
 import { Box, Button, Card, Typography, TextField, Chip, Stack, Divider, List, ListItem, ListItemText } from '@mui/material';
+import { useConnection } from '../../contexts/ConnectionContext';
 // Leer playerId sólo en cliente tras el montaje para evitar discrepancias SSR/CSR y errores de hidratación.
 function readPlayerIdClient(): string | undefined {
   const pidParam = new URLSearchParams(window.location.search).get('pid');
@@ -138,123 +139,111 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, [playerId, code]);
 
-  // Suscripción SSE con reconexión automática para Vercel
-  const sseRef = useRef<EventSource | null>(null);
+  // Usar polling como mecanismo principal para máxima estabilidad
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
-  const [usePolling, setUsePolling] = useState(false);
-  const [connectionAttempts, setConnectionAttempts] = useState(0);
-  const maxReconnectAttempts = 5;
+  const lastStateRef = useRef<string | null>(null);
+  const { setConnectionStatus, setRetryCount } = useConnection();
   
   useEffect(() => {
     if (!playerId) return;
-    refresh(); // carga inicial
     
-    // Intentar SSE primero, con fallback a polling mejorado para Vercel
-    if (!usePolling) {
-      try {
-        let sseWorking = false;
-        let reconnectAttempts = 0;
-        const maxAttempts = 3;
-        
-        const createSSEConnection = () => {
-          const es = new EventSource(`/api/game/${code}/events`);
-          sseRef.current = es;
+    console.log('[Connection] Starting robust polling mode for maximum stability');
+    setConnectionStatus('connecting');
+    
+    // Polling agresivo con detección proactiva de cambios
+    const startPolling = () => {
+      let consecutiveErrors = 0;
+      const maxErrors = 5;
+      
+      const poll = async () => {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 8000); // Timeout más corto
           
-          const sseTimeout = setTimeout(() => {
-            if (!sseWorking) {
-              console.log('[SSE] Connection timeout, switching to polling');
-              es.close();
-              setUsePolling(true);
+          const res = await fetch(`/api/game/${code}/state?pid=${playerId}&t=${Date.now()}`, {
+            signal: controller.signal,
+            cache: 'no-store',
+            headers: {
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Pragma': 'no-cache',
+              'Expires': '0'
             }
-          }, 20000); // Timeout más generoso
+          });
           
-          es.onopen = () => {
-            console.log('[SSE] Connection established');
-            sseWorking = true;
-            reconnectAttempts = 0;
-            clearTimeout(sseTimeout);
-          };
+          clearTimeout(timeoutId);
           
-          es.onmessage = (ev) => {
-            try {
-              const msg = JSON.parse(ev.data);
-              if (msg.type === 'ping') {
-                console.log('[SSE] Heartbeat received');
-                return;
-              }
-              if (msg.type === 'game-close') {
-                console.log('[SSE] Game closed by host');
+          if (res.status === 404) {
+            console.log('[Polling] Game not found, redirecting to home');
+            sessionStorage.clear();
+            window.location.href = '/';
+            return;
+          }
+          
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          
+          const newState = await res.json();
+          const stateHash = JSON.stringify(newState);
+          
+          // Detectar cambios en el estado
+          if (lastStateRef.current !== stateHash) {
+            console.log('[Polling] State change detected, updating');
+            setState(newState);
+            lastStateRef.current = stateHash;
+          }
+          
+          // Reset error counter on success
+          consecutiveErrors = 0;
+          setConnectionStatus('connected');
+          setRetryCount(0);
+          
+        } catch (error: any) {
+          consecutiveErrors++;
+          console.warn(`[Polling] Error (${consecutiveErrors}/${maxErrors}):`, error.message);
+          
+          if (consecutiveErrors >= maxErrors) {
+            setConnectionStatus('error');
+            setRetryCount(prev => {
+              const newCount = prev + 1;
+              
+              if (newCount >= 10) {
+                console.log('[Polling] Too many failed attempts, redirecting to home');
                 sessionStorage.clear();
                 window.location.href = '/';
-                return;
+                return newCount;
               }
-              if ([
-                'init',
-                'player-join',
-                'player-leave', 
-                'round-start',
-                'round-next',
-                'round-end',
-                'next-turn'
-              ].includes(msg.type)) {
-                console.log(`[SSE] Event received: ${msg.type}`);
-                refresh();
-              }
-            } catch (error) {
-              console.warn('[SSE] Failed to parse message:', error);
-            }
-          };
-          
-          es.onerror = (event) => {
-            console.log(`[SSE] Connection error (attempt ${reconnectAttempts + 1}):`, event);
-            clearTimeout(sseTimeout);
-            es.close();
-            
-            // Retry limitado antes de caer a polling
-            if (reconnectAttempts < maxAttempts) {
-              reconnectAttempts++;
+              
+              // Backoff exponencial pero limitado
+              const backoffTime = Math.min(1000 * Math.pow(1.5, newCount), 10000);
+              console.log(`[Polling] Backing off for ${backoffTime}ms`);
               setTimeout(() => {
-                createSSEConnection();
-              }, Math.min(1000 * Math.pow(2, reconnectAttempts), 10000));
-            } else {
-              console.log('[SSE] Max reconnection attempts reached, switching to polling');
-              setUsePolling(true);
-            }
-          };
-          
-          return () => {
-            clearTimeout(sseTimeout);
-            es.close();
-          };
-        };
-        
-        const cleanup = createSSEConnection();
-        
-        return () => {
-          cleanup();
-          sseRef.current = null;
-        };
-      } catch (error) {
-        console.log('[SSE] Not supported, using polling:', error);
-        setUsePolling(true);
-      }
-    } else {
-      // Fallback: polling cada 2 segundos para mejor respuesta
-      console.log('[Polling] Starting polling mode');
-      const poll = () => {
-        refresh();
-      };
-      
-      pollingRef.current = setInterval(poll, 2000);
-      
-      return () => {
-        if (pollingRef.current) {
-          clearInterval(pollingRef.current);
-          pollingRef.current = null;
+                setConnectionStatus('connecting');
+                consecutiveErrors = 0;
+              }, backoffTime);
+              
+              return newCount;
+            });
+          }
         }
       };
-    }
-  }, [code, playerId, refresh, usePolling]);
+      
+      // Carga inicial
+      poll();
+      
+      // Polling cada 1.5 segundos para balance entre responsividad y carga
+      pollingRef.current = setInterval(poll, 1500);
+    };
+    
+    startPolling();
+    
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    };
+  }, [code, playerId]);
 
   // Detectar nueva ronda e iniciar animación
   useEffect(() => {
@@ -371,7 +360,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: { xs: 1, sm: 2 }, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 1, position: 'relative' }}>
           <Typography variant="h4" sx={{ fontWeight: 700, color: '#e64a19' }}>
             🎪 Partida {code}
           </Typography>
