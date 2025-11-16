@@ -92,6 +92,23 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [showControls, setShowControls] = useState(false);
   const [defaultName, setDefaultName] = useState('');
   const [initializing, setInitializing] = useState(true);
+  const [wasMyTurnPreviously, setWasMyTurnPreviously] = useState(false);
+
+  // Función para vibración en móviles
+  const vibrateOnTurn = useCallback(() => {
+    // Verificar si el navegador soporta vibración
+    if ('vibrate' in navigator) {
+      try {
+        // Patrón de vibración: vibrar 200ms, pausa 100ms, vibrar 200ms
+        navigator.vibrate([200, 100, 200]);
+        console.log('[Vibration] Turn notification sent');
+      } catch (error) {
+        console.warn('[Vibration] Failed to vibrate:', error);
+      }
+    } else {
+      console.log('[Vibration] Not supported on this device');
+    }
+  }, []);
 
   // Inicializar nombre por defecto una sola vez al montar
   useEffect(() => {
@@ -460,6 +477,21 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       }, 4800);
     }
   }, [state?.round, lastRoundId]);
+
+  // Detectar cambio de turno y vibrar en móviles
+  useEffect(() => {
+    // Solo activar si hay una ronda activa y el estado está completo
+    if (state?.round && state.isMyTurn !== undefined) {
+      // Si ahora es mi turno pero antes no lo era, vibrar
+      if (state.isMyTurn && !wasMyTurnPreviously) {
+        console.log('[Turn] It is now my turn, triggering vibration');
+        vibrateOnTurn();
+      }
+      
+      // Actualizar el estado anterior
+      setWasMyTurnPreviously(state.isMyTurn);
+    }
+  }, [state?.isMyTurn, state?.round, wasMyTurnPreviously, vibrateOnTurn]);
 
   // Contador regresivo para revelado
   useEffect(() => {
