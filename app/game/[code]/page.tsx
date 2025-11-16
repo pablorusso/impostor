@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { PlayerState } from '../../../lib/types';
 import { Box, Button, Card, Typography, TextField, Chip, Stack, Divider, List, ListItem, ListItemText } from '@mui/material';
 // Leer playerId sólo en cliente tras el montaje para evitar discrepancias SSR/CSR y errores de hidratación.
@@ -49,11 +49,43 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, [playerId]);
 
+  // Suscripción SSE para eventos del juego (elimina polling continuo)
+  const sseRef = useRef<EventSource | null>(null);
   useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 2500);
-    return () => clearInterval(id);
-  }, [refresh]);
+    if (!playerId) return; // esperar a tener jugador (para refresh personalizado)
+    refresh(); // carga inicial
+    const es = new EventSource(`/api/game/${code}/events`);
+    sseRef.current = es;
+    es.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'ping') return; // heartbeat
+        if (msg.type === 'game-close') {
+          sessionStorage.removeItem('playerId');
+          window.location.href = '/';
+          return;
+        }
+        // Para cualquier evento relevante refrescar estado individual
+        if ([
+          'init',
+          'player-join',
+          'round-start',
+          'round-next',
+          'round-end'
+        ].includes(msg.type)) {
+          refresh();
+        }
+      } catch {}
+    };
+    es.onerror = () => {
+      // Fallback simple: cerrar SSE (el usuario puede recargar)
+      es.close();
+    };
+    return () => {
+      es.close();
+      sseRef.current = null;
+    };
+  }, [code, playerId, refresh]);
 
   // Detectar nueva ronda e iniciar animación
   useEffect(() => {
