@@ -17,10 +17,22 @@
           "value": "keep-alive"
         },
         {
+          "key": "Content-Encoding",
+          "value": "none"
+        },
+        {
           "key": "X-Accel-Buffering",
           "value": "no"
+        },
+        {
+          "key": "X-Vercel-Cache",
+          "value": "BYPASS"
         }
       ]
     }
-  ]
+  ],
+  "regions": ["iad1"],
+  "env": {
+    "NODE_ENV": "production"
+  }
 }

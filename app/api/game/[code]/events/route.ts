@@ -23,17 +23,20 @@ export async function GET(_: Request, { params }: { params: { code: string } }) 
         if (initial) {
           send({ type: 'init', code: code.toUpperCase(), timestamp: Date.now() });
         }
-        // Heartbeat más frecuente para Vercel/Safari
+        // Heartbeat optimizado para Vercel según limitaciones documentadas
         heart = setInterval(() => {
           try {
+            // Flush inmediatamente para Vercel
             send({ type: 'ping', timestamp: Date.now() });
           } catch (error) {
-            // Si falla el heartbeat, cerrar la conexión
+            console.log('[SSE] Heartbeat failed, closing connection:', error);
             clearInterval(heart);
             unsubscribe();
-            controller.close();
+            try {
+              controller.close();
+            } catch {}
           }
-        }, 15000); // Más frecuente para evitar timeouts
+        }, 10000); // 10s para evitar timeout de Vercel
       },
       cancel() {
         clearInterval(heart);
@@ -43,6 +46,7 @@ export async function GET(_: Request, { params }: { params: { code: string } }) 
     {
       headers: {
         'Content-Type': 'text/event-stream',
+        'Content-Encoding': 'none', // Importante para Vercel según documentación
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',
@@ -50,6 +54,7 @@ export async function GET(_: Request, { params }: { params: { code: string } }) 
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': 'Cache-Control',
         'X-Accel-Buffering': 'no', // nginx
+        'X-Vercel-Cache': 'BYPASS', // Forzar bypass de cache Vercel
       },
     }
   );

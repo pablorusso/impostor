@@ -24,19 +24,27 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
   const refresh = useCallback(async () => {
     if (!playerId) return;
+    
     try {
-      // Timeout más conservador para Vercel
+      // Timeout más conservador para Vercel con headers específicos
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      
+      console.log(`[Refresh] Fetching state for player: ${playerId}`);
       
       const res = await fetch(`/api/game/${code}/state?pid=${playerId}`, {
         signal: controller.signal,
-        cache: 'no-store' // Evitar cache en Vercel
+        cache: 'no-store', // Evitar cache en Vercel
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
       });
       
       clearTimeout(timeoutId);
       
       if (res.status === 404) {
+        console.log('[Refresh] Game not found (404), redirecting to home');
         // Sala cerrada o no existe: limpiar completamente y redirigir
         sessionStorage.clear();
         setState(null);
@@ -50,33 +58,45 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       
       if (res.ok) {
         const data = await res.json();
-        // Verificar que los datos del jugador sean consistentes
-        if (data && data.player && data.player.name) {
+        console.log('[Refresh] Received data:', { 
+          hasGame: !!data?.game, 
+          hasPlayer: !!data?.player, 
+          playerName: data?.player?.name 
+        });
+        
+        // Verificar integridad completa de los datos
+        if (data && data.game && data.player && data.player.name) {
           setState(data);
         } else {
-          // Dar una segunda oportunidad antes de limpiar
-          console.warn('Invalid player data, retrying once...');
+          console.warn('[Refresh] Incomplete data received, structure check failed');
+          // Intentar una vez más después de un delay
           setTimeout(() => {
-            if (playerId) refresh();
-          }, 2000);
+            if (playerId) {
+              console.log('[Refresh] Retrying after invalid data...');
+              refresh();
+            }
+          }, 3000);
         }
       } else {
-        console.warn('Server error:', res.status, 'retrying...');
-        // Reintentar una vez antes de limpiar
+        console.warn(`[Refresh] Server returned status ${res.status}, retrying...`);
+        // Reintentar después de un delay
         setTimeout(() => {
           if (playerId) refresh();
-        }, 2000);
+        }, 3000);
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        console.warn('Request timeout, retrying...');
+        console.warn('[Refresh] Request timeout, retrying...');
       } else {
-        console.warn('Network error:', error);
+        console.warn('[Refresh] Network error:', error);
       }
-      // Reintentar en lugar de limpiar inmediatamente
+      // Reintentar después de un delay más largo
       setTimeout(() => {
-        if (playerId) refresh();
-      }, 3000);
+        if (playerId) {
+          console.log('[Refresh] Retrying after error...');
+          refresh();
+        }
+      }, 5000);
     }
   }, [playerId, code]);
 
@@ -118,40 +138,51 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, [playerId, code]);
 
-  // Suscripción SSE con fallback a polling para mejor compatibilidad
+  // Suscripción SSE con reconexión automática para Vercel
   const sseRef = useRef<EventSource | null>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const [usePolling, setUsePolling] = useState(false);
+  const [connectionAttempts, setConnectionAttempts] = useState(0);
+  const maxReconnectAttempts = 5;
   
   useEffect(() => {
     if (!playerId) return;
     refresh(); // carga inicial
     
-    // Intentar SSE primero, con fallback a polling
+    // Intentar SSE primero, con fallback a polling mejorado para Vercel
     if (!usePolling) {
       try {
         const es = new EventSource(`/api/game/${code}/events`);
         sseRef.current = es;
         
         let sseWorking = false;
+        let reconnectAttempts = 0;
+        const maxAttempts = 3;
+        
         const sseTimeout = setTimeout(() => {
           if (!sseWorking) {
-            console.log('SSE timeout, switching to polling');
+            console.log('[SSE] Connection timeout, switching to polling');
             es.close();
             setUsePolling(true);
           }
-        }, 10000); // 10 segundos timeout
+        }, 20000); // Aumentar timeout para Vercel
         
         es.onopen = () => {
+          console.log('[SSE] Connection established');
           sseWorking = true;
+          reconnectAttempts = 0;
           clearTimeout(sseTimeout);
         };
         
         es.onmessage = (ev) => {
           try {
             const msg = JSON.parse(ev.data);
-            if (msg.type === 'ping') return;
+            if (msg.type === 'ping') {
+              console.log('[SSE] Heartbeat received');
+              return;
+            }
             if (msg.type === 'game-close') {
+              console.log('[SSE] Game closed by host');
               sessionStorage.clear();
               window.location.href = '/';
               return;
@@ -165,16 +196,36 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               'round-end',
               'next-turn'
             ].includes(msg.type)) {
+              console.log(`[SSE] Event received: ${msg.type}`);
               refresh();
             }
-          } catch {}
+          } catch (error) {
+            console.warn('[SSE] Failed to parse message:', error);
+          }
         };
         
-        es.onerror = () => {
-          console.log('SSE error, switching to polling');
+        es.onerror = (event) => {
+          console.log(`[SSE] Connection error (attempt ${reconnectAttempts + 1}):`, event);
           clearTimeout(sseTimeout);
           es.close();
-          setUsePolling(true);
+          
+          // Retry limitado antes de caer a polling
+          if (reconnectAttempts < maxAttempts) {
+            reconnectAttempts++;
+            setTimeout(() => {
+              if (!sseRef.current || sseRef.current.readyState === EventSource.CLOSED) {
+                const newEs = new EventSource(`/api/game/${code}/events`);
+                sseRef.current = newEs;
+                // Reasignar eventos al nuevo EventSource
+                newEs.onopen = es.onopen;
+                newEs.onmessage = es.onmessage;
+                newEs.onerror = es.onerror;
+              }
+            }, Math.min(1000 * Math.pow(2, reconnectAttempts), 5000));
+          } else {
+            console.log('[SSE] Max reconnection attempts reached, switching to polling');
+            setUsePolling(true);
+          }
         };
         
         return () => {
@@ -183,16 +234,17 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           sseRef.current = null;
         };
       } catch (error) {
-        console.log('SSE not supported, using polling');
+        console.log('[SSE] Not supported, using polling:', error);
         setUsePolling(true);
       }
     } else {
-      // Fallback: polling cada 3 segundos
+      // Fallback: polling cada 2 segundos para mejor respuesta
+      console.log('[Polling] Starting polling mode');
       const poll = () => {
         refresh();
       };
       
-      pollingRef.current = setInterval(poll, 3000);
+      pollingRef.current = setInterval(poll, 2000);
       
       return () => {
         if (pollingRef.current) {

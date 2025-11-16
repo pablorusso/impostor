@@ -7,27 +7,58 @@ interface Store {
 }
 
 function getStore(): Store {
-  // In-memory singleton con mejor persistencia para Vercel
+  // Mejorar persistencia para Vercel usando técnicas documentadas
   const g = globalThis as any;
-  if (!g.__IMPOSTOR_STORE__) {
-    g.__IMPOSTOR_STORE__ = { games: new Map<string, Game>() } as Store;
+  
+  // Usar una clave más específica y robusta
+  const storeKey = '__IMPOSTOR_GAME_STORE_V2__';
+  
+  if (!g[storeKey]) {
+    console.log('[Store] Initializing new game store instance');
+    g[storeKey] = { 
+      games: new Map<string, Game>(),
+      lastAccess: Date.now(),
+      instanceId: Math.random().toString(36).substr(2, 9)
+    } as Store & { lastAccess: number; instanceId: string };
     
-    // Cleanup automático de juegos viejos para liberar memoria
+    // Cleanup más conservador para Vercel
     if (typeof setInterval !== 'undefined') {
-      setInterval(() => {
+      const cleanupInterval = setInterval(() => {
         const now = Date.now();
-        const store = g.__IMPOSTOR_STORE__ as Store;
+        const store = g[storeKey] as Store & { lastAccess: number };
+        
+        if (!store || !store.games) {
+          clearInterval(cleanupInterval);
+          return;
+        }
+        
+        // Actualizar último acceso
+        store.lastAccess = now;
+        
+        // Limpiar juegos inactivos más agresivamente en Vercel
         for (const [code, game] of store.games.entries()) {
-          const lastActivity = game.currentRound?.startedAt || 0;
-          // Limpiar juegos inactivos por más de 2 horas
-          if (now - lastActivity > 2 * 60 * 60 * 1000) {
+          const lastActivity = Math.max(
+            game.currentRound?.startedAt || 0,
+            game.players.reduce((latest, p) => {
+              // Usar timestamp del jugador si está disponible
+              return Math.max(latest, (p as any).lastSeen || 0);
+            }, 0)
+          );
+          
+          // Reducir a 1 hora para evitar acumulación en Vercel
+          if (now - lastActivity > 60 * 60 * 1000) {
+            console.log(`[Store] Cleaning up inactive game: ${code}`);
             store.games.delete(code);
           }
         }
-      }, 10 * 60 * 1000); // Check cada 10 minutos
+      }, 5 * 60 * 1000); // Check cada 5 minutos
     }
   }
-  return g.__IMPOSTOR_STORE__;
+  
+  const store = g[storeKey] as Store & { lastAccess: number; instanceId: string };
+  store.lastAccess = Date.now();
+  
+  return store;
 }
 
 export function createGame(hostName: string, words?: string[]): { code: string; hostId: string; playerId: string } {
