@@ -4,6 +4,7 @@ import { getState } from './store';
 export type GameEventType =
   | 'init'
   | 'player-join'
+  | 'player-leave'
   | 'round-start'
   | 'round-end'
   | 'round-next'

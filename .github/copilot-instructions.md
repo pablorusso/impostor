@@ -1,8 +1,8 @@
-- Clarify Project Requirements: COMPLETADO (Juego Impostor Next.js, lobby, rondas, palabras, despliegue Vercel free).
-- Scaffold the Project: COMPLETADO (estructura Next.js creada manualmente).
-- Customize the Project: EN PROGRESO (implementación lógica juego, rutas API, páginas).
+- Clarify Project Requirements: COMPLETADO ✅ (Juego Impostor Next.js, lobby, rondas, palabras, despliegue Vercel free).
+- Scaffold the Project: COMPLETADO ✅ (estructura Next.js creada manualmente).
+- Customize the Project: COMPLETADO ✅ (implementación lógica juego, rutas API, páginas, manejo turnos, abandonar partida).
 - Install Required Extensions: N/A (no requeridas adicionales).
-- Compile the Project: PENDIENTE (instalar dependencias y build).
-- Create and Run Task: PENDIENTE (sólo si se necesita tarea personalizada, probablemente no).
-- Launch the Project: PENDIENTE (modo dev tras build).
-- Ensure Documentation is Complete: PENDIENTE (README creado, falta limpiar este archivo al finalizar).
+- Compile the Project: COMPLETADO ✅ (instalar dependencias y build exitoso).
+- Create and Run Task: N/A (no necesario, npm scripts suficientes).
+- Launch the Project: COMPLETADO ✅ (modo dev funcional).
+- Ensure Documentation is Complete: COMPLETADO ✅ (README creado y funcional).

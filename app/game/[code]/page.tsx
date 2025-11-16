@@ -21,7 +21,6 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [lastRoundId, setLastRoundId] = useState<string | null>(null);
   const [showTurnInfo, setShowTurnInfo] = useState(false);
   const [showControls, setShowControls] = useState(false);
-  const [showEndGameButton, setShowEndGameButton] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!playerId) return;
@@ -159,7 +158,8 @@ export default function GameLobby({ params }: { params: { code: string } }) {
             }
             if ([
               'init',
-              'player-join', 
+              'player-join',
+              'player-leave', 
               'round-start',
               'round-next',
               'round-end',
@@ -211,7 +211,6 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       setCountdown(3);
       setShowTurnInfo(false);
       setShowControls(false);
-      setShowEndGameButton(false);
       
       // Mostrar información de turno después de 4 segundos de la palabra
       setTimeout(() => {
@@ -235,7 +234,6 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     } else if (wordRevealing && countdown === 0) {
       setTimeout(() => {
         setWordRevealing(false);
-        setShowEndGameButton(true); // Mostrar botón finalizar cuando aparece la palabra
       }, 500); // Pequeño delay para la animación final
     }
   }, [countdown, wordRevealing]);
@@ -286,6 +284,24 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       const res = await fetch(`/api/game/${code}/close`, { method: 'POST' });
       if (res.ok || res.status === 404) {
         // Si el juego se cerró correctamente o ya no existe (404), limpiar y redirigir
+        sessionStorage.clear();
+        window.location.href = '/';
+      }
+    } catch (error) {
+      // En caso de error de red, también limpiar y redirigir
+      sessionStorage.clear();
+      window.location.href = '/';
+    }
+  }
+
+  async function leaveGame() {
+    try {
+      const res = await fetch(`/api/game/${code}/leave`, { 
+        method: 'POST', 
+        body: JSON.stringify({ playerId }) 
+      });
+      if (res.ok || res.status === 404) {
+        // Si se abandonó correctamente o el juego ya no existe, limpiar y redirigir
         sessionStorage.clear();
         window.location.href = '/';
       }
@@ -548,7 +564,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               )}
               
               {/* Finalizar juego button below word for host */}
-              {isRoundActive && state?.isHost && showEndGameButton && (
+              {isRoundActive && state?.isHost && (
                 <Box sx={{ 
                   mt: 3,
                   display: 'flex', 
@@ -577,6 +593,21 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     onClick={closeGame}
                   >
                     🏁 Finalizar juego
+                  </Button>
+                </Box>
+              )}
+              
+              {/* Abandonar partida button for non-host players */}
+              {!state?.isHost && playerId && (
+                <Box sx={{ mt: isRoundActive ? 3 : 2, display: 'flex', justifyContent: 'center' }}>
+                  <Button 
+                    variant="outlined" 
+                    color="error" 
+                    size="large" 
+                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
+                    onClick={leaveGame}
+                  >
+                    🚪 Abandonar partida
                   </Button>
                 </Box>
               )}
