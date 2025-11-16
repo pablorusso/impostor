@@ -1,5 +1,6 @@
 "use client";
 import { useState } from 'react';
+import { Box, Button, Card, Typography, TextField } from '@mui/material';
 
 export default function NewGamePage() {
   const [loading, setLoading] = useState(false);
@@ -27,15 +28,60 @@ export default function NewGamePage() {
   }
 
   return (
-    <div className="card">
-      <h1>Nueva partida</h1>
-      <form onSubmit={handleCreate}>
-        <input name="name" placeholder="Tu nombre (host)" required maxLength={30} />
-        <textarea name="words" placeholder="Lista de palabras (opcional, separadas por coma o líneas)" rows={5} />
-        <button type="submit" disabled={loading}>{loading ? 'Creando...' : 'Crear partida'}</button>
-        {error && <p className="danger">{error}</p>}
-        <p className="muted">Si no defines palabras se usan un conjunto por defecto.</p>
-      </form>
-    </div>
+    <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: 2, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+      <Card sx={{ maxWidth: 450, width: '100%', p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
+        <Typography variant="h4" sx={{ fontWeight: 700, color: '#e64a19', mb: 2 }}>
+          🎲 Nueva partida
+        </Typography>
+        <Box component="form"
+          onSubmit={handleCreate}
+          sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
+          <TextField 
+            name="name" 
+            label="Tu nombre (host)" 
+            required 
+            inputProps={{ maxLength: 30 }} 
+            variant="outlined" 
+            size="medium"
+            sx={{ bgcolor: '#fff', borderRadius: 1 }}
+          />
+          <TextField 
+            name="words" 
+            label="Lista de palabras (opcional)" 
+            placeholder="Separadas por coma o líneas" 
+            multiline 
+            rows={5} 
+            variant="outlined"
+            sx={{ bgcolor: '#fff', borderRadius: 1 }}
+          />
+          <Button 
+            type="submit" 
+            variant="contained" 
+            color="primary" 
+            size="large" 
+            disabled={loading}
+            sx={{ 
+              fontSize: 18, 
+              px: 4, 
+              py: 1.5, 
+              bgcolor: '#1e88e5', 
+              borderRadius: 3,
+              fontWeight: 700,
+              mt: 1
+            }}
+          >
+            {loading ? '⏳ Creando...' : '🚀 Crear partida'}
+          </Button>
+          {error && (
+            <Typography color="error" sx={{ fontSize: 16, fontWeight: 500 }}>
+              {error}
+            </Typography>
+          )}
+          <Typography sx={{ color: '#757575', fontSize: 14, mt: 1 }}>
+            Si no defines palabras se usan un conjunto por defecto.
+          </Typography>
+        </Box>
+      </Card>
+    </Box>
   );
 }
