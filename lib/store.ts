@@ -6,132 +6,21 @@ interface Store {
   games: Map<string, Game>;
 }
 
-// Detectar Safari para aplicar workarounds específicos
-function isSafari(): boolean {
-  if (typeof window === 'undefined') return false;
-  const ua = window.navigator.userAgent;
-  return /Safari/.test(ua) && !/Chrome/.test(ua) && !/Chromium/.test(ua);
-}
-
-// Persistencia específica para Safari
-function safariPersistence() {
-  if (!isSafari() || typeof window === 'undefined') return null;
-  
-  try {
-    // Safari tiene mejor soporte para sessionStorage que memory global
-    const key = 'impostor_safari_backup';
-    const stored = sessionStorage.getItem(key);
-    return stored ? JSON.parse(stored) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveSafariPersistence(data: any) {
-  if (!isSafari() || typeof window === 'undefined') return;
-  
-  try {
-    const key = 'impostor_safari_backup';
-    sessionStorage.setItem(key, JSON.stringify(data));
-  } catch (e) {
-    console.warn('[Safari] Could not save to sessionStorage:', e);
-  }
-}
-
 function getStore(): Store {
-  // Persistencia ultra-robusta para Vercel - múltiples estrategias de backup
   const g = globalThis as any;
-  
-  // Usar múltiples claves para redundancia
-  const storeKey = '__IMPOSTOR_GAME_STORE_V4__';
-  const backupKey = '__IMPOSTOR_BACKUP_STORE__';
+  const storeKey = '__IMPOSTOR_GAME_STORE__';
   
   if (!g[storeKey]) {
-    console.log('[Store] Initializing new ultra-robust game store instance');
-    
-    // Intentar recuperar desde múltiples fuentes
-    let restoredGames = new Map<string, Game>();
-    
-    // Primero intentar desde Safari persistence si es Safari
-    if (isSafari()) {
-      const safariData = safariPersistence();
-      if (safariData && safariData.games) {
-        try {
-          console.log('[Store] Safari: Restoring from sessionStorage');
-          restoredGames = new Map(safariData.games.map((g: any) => [g[0], g[1]]));
-          console.log(`[Store] Safari: Restored ${restoredGames.size} games`);
-        } catch (error) {
-          console.warn('[Store] Safari: Failed to restore:', error);
-        }
-      }
-    }
-    
-    // Luego intentar desde backup global si no hay datos de Safari
-    if (restoredGames.size === 0 && g[backupKey] && g[backupKey].games) {
-      try {
-        console.log('[Store] Attempting to restore from global backup');
-        const backupData = g[backupKey];
-        restoredGames = new Map(backupData.games);
-        console.log(`[Store] Restored ${restoredGames.size} games from global backup`);
-      } catch (error) {
-        console.warn('[Store] Failed to restore from global backup:', error);
-      }
-    }
+    console.log('[Store] Initializing new game store instance');
     
     g[storeKey] = { 
-      games: restoredGames,
-      lastAccess: Date.now(),
-      instanceId: Math.random().toString(36).substr(2, 9),
-      heartbeat: Date.now(),
-      saveCount: 0
-    } as Store & { lastAccess: number; instanceId: string; heartbeat: number; saveCount: number };
+      games: new Map<string, Game>(),
+      lastAccess: Date.now()
+    } as Store & { lastAccess: number };
     
-    // Sistema de backup y heartbeat para ultra-robustez
+    // Cleanup simple cada 30 minutos
     if (typeof setInterval !== 'undefined') {
-      // Heartbeat más frecuente con guardado Safari
-      const heartbeatInterval = setInterval(() => {
-        const store = g[storeKey] as Store & { heartbeat: number; saveCount: number };
-        if (!store) {
-          clearInterval(heartbeatInterval);
-          return;
-        }
-        store.heartbeat = Date.now();
-        
-        // Guardado específico para Safari cada heartbeat
-        if (isSafari()) {
-          try {
-            const gamesArray = Array.from(store.games.entries());
-            saveSafariPersistence({ games: gamesArray, timestamp: Date.now() });
-          } catch (e) {
-            console.warn('[Safari] Heartbeat save failed:', e);
-          }
-        }
-      }, 30 * 1000); // Cada 30 segundos
-      
-      // Backup automático
-      const backupInterval = setInterval(() => {
-        const store = g[storeKey] as Store & { saveCount: number };
-        if (!store || !store.games) {
-          clearInterval(backupInterval);
-          return;
-        }
-        
-        try {
-          // Crear backup de toda la data
-          g[backupKey] = {
-            games: Array.from(store.games.entries()),
-            timestamp: Date.now(),
-            saveCount: store.saveCount++
-          };
-          console.log(`[Store] Backup created (#${store.saveCount}) with ${store.games.size} games`);
-        } catch (error) {
-          console.error('[Store] Backup failed:', error);
-        }
-      }, 2 * 60 * 1000); // Backup cada 2 minutos
-      
-      // Cleanup conservador
       const cleanupInterval = setInterval(() => {
-        const now = Date.now();
         const store = g[storeKey] as Store & { lastAccess: number };
         
         if (!store || !store.games) {
@@ -139,9 +28,10 @@ function getStore(): Store {
           return;
         }
         
-        store.lastAccess = now;
+        store.lastAccess = Date.now();
+        const now = Date.now();
         
-        // Cleanup más conservador - solo juegos realmente viejos
+        // Limpiar juegos inactivos de más de 2 horas
         for (const [code, game] of store.games.entries()) {
           const lastActivity = Math.max(
             game.currentRound?.startedAt || 0,
@@ -149,34 +39,19 @@ function getStore(): Store {
             (game as any).lastUpdate || 0
           );
           
-          // 2 horas para ser muy conservador
           if (now - lastActivity > 2 * 60 * 60 * 1000) {
-            console.log(`[Store] Cleaning up very old game: ${code}`);
+            console.log(`[Store] Cleaning up inactive game: ${code}`);
             store.games.delete(code);
           }
         }
-      }, 10 * 60 * 1000); // Check cada 10 minutos
+      }, 30 * 60 * 1000); // Check cada 30 minutos
     }
   }
   
-  const store = g[storeKey] as Store & { lastAccess: number; instanceId: string; heartbeat: number };
+  const store = g[storeKey] as Store & { lastAccess: number };
   store.lastAccess = Date.now();
-  store.heartbeat = Date.now();
   
   return store;
-}
-
-// Función para guardar estado crítico inmediatamente (especialmente para Safari)
-function saveCriticalState(store: Store) {
-  if (isSafari()) {
-    try {
-      const gamesArray = Array.from(store.games.entries());
-      saveSafariPersistence({ games: gamesArray, timestamp: Date.now() });
-      console.log('[Safari] Critical state saved');
-    } catch (e) {
-      console.warn('[Safari] Critical save failed:', e);
-    }
-  }
 }
 
 export function createGame(hostName: string, words?: string[], shareCategories?: boolean): { code: string; hostId: string; playerId: string } {
@@ -201,9 +76,6 @@ export function createGame(hostName: string, words?: string[], shareCategories?:
   
   store.games.set(code, game);
   
-  // Guardar estado crítico para Safari
-  saveCriticalState(store);
-  
   return { code, hostId, playerId: hostId };
 }
 
@@ -223,10 +95,6 @@ export function joinGame(code: string, name: string): { playerId: string } | nul
   if (game.currentRound && game.turnOrder) {
     game.turnOrder.push(player.id);
   }
-  
-  // Guardar estado crítico para Safari
-  const store = getStore();
-  saveCriticalState(store);
   
   return { playerId: player.id };
 }
@@ -254,10 +122,6 @@ export function startRound(code: string): boolean {
   const category = findWordCategory(word);
   const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
   game.currentRound = round;
-  
-  // Guardar estado crítico para Safari
-  const store = getStore();
-  saveCriticalState(store);
   
   return true;
 }

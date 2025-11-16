@@ -1,8 +1,8 @@
-import { startRound } from '../../../../../lib/store';
+import { startRound } from '../../../../../lib/redis-store';
 import { emit } from '../../../../../lib/events';
 
 export async function POST(_: Request, { params }: { params: { code: string } }) {
-  const ok = startRound(params.code);
+  const ok = await startRound(params.code);
   if (ok) {
     emit(params.code, 'round-start');
   }

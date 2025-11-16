@@ -1,7 +1,8 @@
 "use client";
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Box, Button, Card, Typography, TextField, FormControlLabel, Checkbox, FormGroup, Divider } from '@mui/material';
 import { WORD_CATEGORIES } from '../../lib/words';
+import { PlayerSession } from '../../lib/player-session';
 
 const CATEGORY_INFO = {
   animales: { name: '🐾 Animales', emoji: '🐾' },
@@ -20,7 +21,37 @@ export default function NewGamePage() {
   const [selectedCategories, setSelectedCategories] = useState<Record<string, boolean>>(
     Object.keys(CATEGORY_INFO).reduce((acc, cat) => ({ ...acc, [cat]: true }), {})
   );
-  const [shareCategories, setShareCategories] = useState(false);
+  const [shareCategories, setShareCategories] = useState(true);
+  const [playerSession, setPlayerSession] = useState<PlayerSession | null>(null);
+  const [defaultName, setDefaultName] = useState('');
+  const [hostName, setHostName] = useState('');
+
+  useEffect(() => {
+    const session = new PlayerSession();
+    setPlayerSession(session);
+    const savedName = PlayerSession.getLastPlayerName() || '';
+    setDefaultName(savedName);
+    setHostName(savedName);
+    
+    // Check if player already has an active game
+    const checkActiveGame = async () => {
+      const playerId = PlayerSession.getPlayerId();
+      try {
+        const res = await fetch(`/api/player/${playerId}/status`);
+        if (res.ok) {
+          const status = await res.json();
+          if (status.inGame && status.currentGameCode) {
+            // Show info about current game but don't redirect automatically
+            setError(`Nota: Actualmente tienes una partida activa (${status.currentGameCode}). Al crear una nueva serás automáticamente removido de la anterior.`);
+          }
+        }
+      } catch (error) {
+        console.error('Error checking player status:', error);
+      }
+    };
+    
+    checkActiveGame();
+  }, []);
 
   async function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -52,7 +83,36 @@ export default function NewGamePage() {
     }
     
     try {
-      const res = await fetch('/api/game', { method: 'POST', body: JSON.stringify({ hostName: name, words, shareCategories }) });
+      const playerId = PlayerSession.getPlayerId();
+      
+      // Check and leave any active game first
+      try {
+        const statusRes = await fetch(`/api/player/${playerId}/status`);
+        if (statusRes.ok) {
+          const status = await statusRes.json();
+          if (status.inGame && status.currentGameCode) {
+            await fetch(`/api/game/${status.currentGameCode}/leave`, {
+              method: 'POST',
+              body: JSON.stringify({ playerId: playerId })
+            });
+          }
+        }
+      } catch (leaveError) {
+        console.warn('Error leaving previous game:', leaveError);
+      }
+      
+      // Save player name for future sessions
+      PlayerSession.savePlayerName(name);
+      
+      const res = await fetch('/api/game', { 
+        method: 'POST', 
+        body: JSON.stringify({ 
+          hostPlayerId: playerId,
+          hostName: name, 
+          words, 
+          shareCategories 
+        }) 
+      });
       if (!res.ok) throw new Error('Error creando partida');
       const data = await res.json();
       const url = `/game/${data.code}?pid=${data.playerId}`;
@@ -84,6 +144,8 @@ export default function NewGamePage() {
             name="name" 
             label="Tu nombre (host)" 
             required 
+            value={hostName}
+            onChange={(e) => setHostName(e.target.value)}
             inputProps={{ maxLength: 30 }} 
             variant="outlined" 
             size="medium"

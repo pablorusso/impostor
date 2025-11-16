@@ -4,6 +4,7 @@ import { PlayerState } from '../../../lib/types';
 import { Box, Button, Card, Typography, TextField, Chip, Stack, Divider, List, ListItem, ListItemText } from '@mui/material';
 import { useConnection } from '../../contexts/ConnectionContext';
 import { CATEGORY_DISPLAY_INFO } from '../../../lib/words';
+import { PlayerSession } from '../../../lib/player-session';
 // Detectar Safari
 function isSafari(): boolean {
   if (typeof window === 'undefined') return false;
@@ -89,6 +90,16 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [lastRoundId, setLastRoundId] = useState<string | null>(null);
   const [showTurnInfo, setShowTurnInfo] = useState(false);
   const [showControls, setShowControls] = useState(false);
+  const [defaultName, setDefaultName] = useState('');
+
+  // Inicializar nombre por defecto una sola vez al montar
+  useEffect(() => {
+    const savedName = PlayerSession.getLastPlayerName();
+    if (savedName) {
+      setDefaultName(savedName);
+      setName(savedName);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!playerId) return;
@@ -153,7 +164,10 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           sessionStorage.clear();
           setState(null);
           setPlayerId(undefined);
-          setName('');
+          // Solo limpiar nombre si ya estaba conectado
+          if (playerId) {
+            setName('');
+          }
           if (typeof window !== 'undefined') {
             window.location.href = '/';
           }
@@ -201,40 +215,42 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   // Inicializar playerId tras montaje.
   useEffect(() => {
     if (playerId === undefined) {
-      const pid = readPlayerIdClient();
-      if (pid) {
-        // Verificar que el playerId sea válido antes de usarlo
-        fetch(`/api/game/${code}/state?pid=${pid}`)
-          .then(async res => {
-            if (res.ok) {
-              const data = await res.json();
-              // Verificar que el jugador tenga nombre y esté correctamente registrado
-              if (data && data.player && data.player.name && !detectSessionLoss(data, pid)) {
-                sessionStorage.setItem('playerId', pid);
-                sessionStorage.setItem('playerName', data.player.name);
-                setPlayerId(pid);
-              } else {
-                console.warn('[Init] Session validation failed, attempting recovery');
-                
-                // Intentar recuperación para Safari
-                if (isSafari()) {
-                  const recoveredId = await safariRecovery(code, pid);
-                  if (recoveredId) {
-                    console.log('[Init] Safari recovery successful');
-                    sessionStorage.setItem('playerId', recoveredId);
-                    setPlayerId(recoveredId);
-                    return;
-                  }
-                }
-                
-                // Si no se puede recuperar, limpiar todo
-                console.log('[Init] Cannot recover, clearing session');
-                sessionStorage.clear();
-                setPlayerId(undefined);
-                setName('');
+      // Use persistent PlayerID system
+      const pid = PlayerSession.getPlayerId();
+      
+      // Check if player has an active game first
+      const checkActiveGame = async () => {
+        try {
+          const res = await fetch(`/api/player/${pid}/status`);
+          if (res.ok) {
+            const status = await res.json();
+            if (status.inGame && status.currentGameCode) {
+              // If player has an active game but it's not this one, redirect
+              if (status.currentGameCode !== code) {
+                window.location.href = `/game/${status.currentGameCode}?pid=${pid}`;
+                return;
               }
+              // If it's this game, try to auto-join
+              setPlayerId(pid);
+              return;
+            }
+          }
+        } catch (error) {
+          console.error('Error checking player status:', error);
+        }
+        
+        // Continue with normal validation if no active game
+        try {
+          const res = await fetch(`/api/game/${code}/state?pid=${pid}`);
+          if (res.ok) {
+            const data = await res.json();
+            // Verificar que el jugador tenga nombre y esté correctamente registrado
+            if (data && data.player && data.player.name && !detectSessionLoss(data, pid)) {
+              sessionStorage.setItem('playerId', pid);
+              sessionStorage.setItem('playerName', data.player.name);
+              setPlayerId(pid);
             } else {
-              console.warn('[Init] Invalid playerId, attempting recovery');
+              console.warn('[Init] Session validation failed, attempting recovery');
               
               // Intentar recuperación para Safari
               if (isSafari()) {
@@ -247,14 +263,14 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                 }
               }
               
-              // Si no se puede recuperar, limpiar completamente
+              // Si no se puede recuperar, limpiar todo
+              console.log('[Init] Cannot recover, clearing session');
               sessionStorage.clear();
               setPlayerId(undefined);
               setName('');
             }
-          })
-          .catch(async () => {
-            console.warn('[Init] Network error, attempting recovery');
+          } else {
+            console.warn('[Init] Invalid playerId, attempting recovery');
             
             // Intentar recuperación para Safari
             if (isSafari()) {
@@ -267,12 +283,39 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               }
             }
             
-            // En caso de error de red, limpiar completamente
+            // Si no se puede recuperar, limpiar completamente
             sessionStorage.clear();
             setPlayerId(undefined);
+            // Solo limpiar nombre si ya estaba conectado
+            if (playerId) {
+              setName('');
+            }
+          }
+        } catch (error) {
+          console.warn('[Init] Network error, attempting recovery');
+          
+          // Intentar recuperación para Safari
+          if (isSafari()) {
+            const recoveredId = await safariRecovery(code, pid);
+            if (recoveredId) {
+              console.log('[Init] Safari recovery successful');
+              sessionStorage.setItem('playerId', recoveredId);
+              setPlayerId(recoveredId);
+              return;
+            }
+          }
+          
+          // En caso de error de red, limpiar completamente
+          sessionStorage.clear();
+          setPlayerId(undefined);
+          // Solo limpiar nombre si ya estaba conectado
+          if (playerId) {
             setName('');
-          });
-      }
+          }
+        }
+      };
+      
+      checkActiveGame();
     }
   }, [playerId, code]);
 
@@ -420,17 +463,25 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   async function join() {
     setJoining(true); setError(null);
     try {
-      // Limpiar sesión previa antes de unirse a nueva partida
-      sessionStorage.clear();
+      const currentPlayerId = PlayerSession.getPlayerId();
       
-      const res = await fetch(`/api/game/${code}/join`, { method: 'POST', body: JSON.stringify({ name }) });
+      // Save player name for future sessions
+      PlayerSession.savePlayerName(name);
+      
+      const res = await fetch(`/api/game/${code}/join`, { 
+        method: 'POST', 
+        body: JSON.stringify({ 
+          playerId: currentPlayerId,
+          name 
+        }) 
+      });
       if (!res.ok) throw new Error('No se pudo unir');
       const data = await res.json();
       
       // Verificar que la respuesta tenga los datos esperados
       if (data && data.playerId) {
         sessionStorage.setItem('playerId', data.playerId);
-        sessionStorage.setItem('playerName', name); // Guardar nombre para recuperación
+        sessionStorage.setItem('playerName', name);
         setPlayerId(data.playerId);
         setName('');
         setTimeout(refresh, 300);
@@ -439,9 +490,6 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       }
     } catch (e:any) { 
       setError(e.message);
-      // Limpiar en caso de error
-      sessionStorage.clear();
-      setPlayerId(undefined);
     } finally { 
       setJoining(false); 
     }
@@ -767,13 +815,23 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                 </Box>
               )}
               
-              {/* Finalizar juego button below word for host */}
+              {/* Host controls: Abandonar partida y Finalizar juego */}
               {isRoundActive && state?.isHost && (
                 <Box sx={{ 
                   mt: 3,
                   display: 'flex', 
-                  justifyContent: 'center'
+                  justifyContent: 'center',
+                  gap: 2
                 }}>
+                  <Button 
+                    variant="outlined" 
+                    color="error" 
+                    size="large" 
+                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
+                    onClick={leaveGame}
+                  >
+                    🚪 Abandonar partida
+                  </Button>
                   <Button 
                     variant="outlined" 
                     color="secondary" 
@@ -786,9 +844,18 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                 </Box>
               )}
               
-              {/* Finalizar juego button for inactive rounds */}
+              {/* Host controls for inactive rounds: Abandonar partida y Finalizar juego */}
               {!isRoundActive && state?.isHost && (
-                <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center' }}>
+                <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center', gap: 2 }}>
+                  <Button 
+                    variant="outlined" 
+                    color="error" 
+                    size="large" 
+                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
+                    onClick={leaveGame}
+                  >
+                    🚪 Abandonar partida
+                  </Button>
                   <Button 
                     variant="outlined" 
                     color="secondary" 

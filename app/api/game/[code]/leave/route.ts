@@ -1,4 +1,4 @@
-import { leaveGame } from '../../../../../lib/store';
+import { leaveGame } from '../../../../../lib/redis-store';
 import { emit } from '../../../../../lib/events';
 
 export async function POST(request: Request, { params }: { params: { code: string } }) {
@@ -8,10 +8,10 @@ export async function POST(request: Request, { params }: { params: { code: strin
     return new Response(JSON.stringify({ ok: false, error: 'Player ID required' }), { status: 400 });
   }
 
-  const result = leaveGame(params.code, playerId);
-  if (result.ok) {
-    emit(params.code, result.gameEnded ? 'game-close' : 'player-leave');
+  const success = await leaveGame(params.code, playerId);
+  if (success) {
+    emit(params.code, 'player-leave');
   }
   
-  return new Response(JSON.stringify(result), { status: result.ok ? 200 : 400 });
+  return new Response(JSON.stringify({ ok: success }), { status: success ? 200 : 400 });
 }

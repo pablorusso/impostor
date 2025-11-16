@@ -1,8 +1,8 @@
-import { nextTurn } from '../../../../../lib/store';
+import { nextTurn } from '../../../../../lib/redis-store';
 import { emit } from '../../../../../lib/events';
 
 export async function POST(_: Request, { params }: { params: { code: string } }) {
-  const ok = nextTurn(params.code);
+  const ok = await nextTurn(params.code);
   if (ok) {
     emit(params.code, 'next-turn');
   }

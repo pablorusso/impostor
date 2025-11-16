@@ -1,24 +1,23 @@
 # Impostor (Juego social)
 
 Aplicación web simple para repartir palabras en rondas entre jugadores, excepto el impostor que no recibe la palabra. El juego ocurre presencialmente; la web sólo gestiona rondas y asignaciones.
-## 🔄 Estabilidad Ultra-Robusta (Nov 2024)
+## 🔄 Arquitectura Redis + Polling Ultra-Robusta (Nov 2024)
 
-**🚨 CAMBIO CRÍTICO - SSE Reemplazado por Polling Robusto**:
+**🚨 MIGRACIÓN COMPLETA - Persistencia Redis Implementada**:
 
-**Problemas Identificados con SSE**:
-- ❌ Pérdida de sincronización intermitente en local
-- ❌ Expulsión de jugadores por pérdida de sesión en Vercel 
-- ❌ Inestabilidad inherente de Edge Functions para conexiones long-lived
+**Problemas Resueltos**:
+- ✅ **Safari session loss**: Eliminado con Redis persistente
+- ✅ **Pérdida de sincronización**: Resuelto con store híbrido
+- ✅ **Escalabilidad serverless**: Redis distribuido funcional
 
-**✅ Nueva Arquitectura Ultra-Robusta**:
-- ✅ **Polling Principal**: Mecanismo principal (cada 1.5s) con detección de cambios de estado
-- ✅ **Persistencia Múltiple**: Store principal + backup automático cada 2 minutos
-- ✅ **Timestamps Completos**: Tracking de actividad en todas las operaciones
-- ✅ **Reconexión Proactiva**: Backoff exponencial con hasta 10 reintentos
+**✅ Arquitectura Final Redis + Polling**:
+- ✅ **Store Híbrido**: Redis (`REDIS_URL`) + fallback memoria para desarrollo
+- ✅ **Polling Robusto**: Mecanismo principal (cada 1.5s) con detección de cambios
+- ✅ **Persistencia Completa**: Redis con TTL de 6 horas, auto-cleanup
+- ✅ **Reconexión Proactiva**: Backoff exponencial con hasta 10 reintentos  
 - ✅ **Indicador Visual**: Estado de conexión en tiempo real (🟢🟡🔴)
-- ✅ **Cleanup Conservador**: Solo juegos inactivos por +2 horas
-- ✅ **Heartbeat**: Cada 30s para mantener instancia activa
-- ✅ **Navegación mejorada**: Botón de home en header global siempre visible
+- ✅ **Logs Informativos**: `[REDIS]` producción, `[DEV]` desarrollo
+- ✅ **Auto-detección**: Usa Redis si está disponible, memoria si no
 
 ## 🚀 Deploy en Vercel
 
@@ -46,8 +45,20 @@ vercel --prod
 - Palabra aleatoria para cada ronda (excepto impostor)
 - In-memory store (NO persistente). Reinicios del servidor limpian partidas.
 
-## Limitaciones
-Para producción se recomienda añadir almacenamiento persistente (Vercel KV, Postgres, Supabase, etc.). El in-memory store puede perderse al escalar a múltiples lambdas o tras inactividad.
+## ⚙️ Configuración Redis
+
+**Estado Actual**: ✅ **Redis configurado y funcionando** con RedisLabs
+
+```env
+# Tu configuración actual (.env.development.local)
+REDIS_URL="redis://default:V4EHzoOHJ7qVu6823nGrZ8EqYOWB6sIN@redis-11973.c8.us-east-1-3.ec2.cloud.redislabs.com:11973"
+```
+
+**Funcionalidades**:
+- ✅ **Persistencia completa**: Los juegos sobreviven reiniciar serverless
+- ✅ **Auto-cleanup**: TTL de 6 horas, limpieza automática
+- ✅ **Desarrollo local**: Funciona con memoria si no hay Redis configurado
+- ✅ **Logs claros**: `[REDIS] Using Redis via REDIS_URL`
 
 ## Scripts
 ```bash
