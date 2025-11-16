@@ -6,11 +6,42 @@ import { ConnectionProvider } from './contexts/ConnectionContext';
 export const metadata = {
   title: 'Impostor Game',
   description: 'Juego de palabras tipo impostor para jugar en persona',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    title: 'Impostor Game',
+    statusBarStyle: 'default',
+    capable: true,
+  },
+  icons: {
+    icon: [
+      { url: '/icon-192x192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512x512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: [
+      { url: '/icon-192x192.png', sizes: '192x192', type: 'image/png' },
+    ],
+  },
+};
+
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  userScalable: false,
+  themeColor: '#e64a19',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="es">
+      <head>
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="theme-color" content="#e64a19" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        <meta name="apple-mobile-web-app-title" content="Impostor Game" />
+        <link rel="apple-touch-icon" href="/icon-192x192.png" />
+        <meta name="mobile-web-app-capable" content="yes" />
+      </head>
       <body style={{fontFamily:'system-ui, -apple-system, Segoe UI, Roboto, sans-serif', backgroundColor:'#fbe9e7', margin:0}}>
         <ConnectionProvider>
           <header style={{padding:'0.75rem 1rem',borderBottom:'1px solid #ddd',marginBottom:'1rem',background:'#ffccbc', display:'flex', alignItems:'center', justifyContent:'space-between'}}>

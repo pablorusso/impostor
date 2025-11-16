@@ -1,0 +1,6 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" fill="#e64a19" rx="85"/>
+  <circle cx="256" cy="256" r="192" fill="white" opacity="0.9"/>
+  <text x="256" y="290" text-anchor="middle" fill="#e64a19" font-family="Arial, sans-serif" font-size="128" font-weight="bold">🎭</text>
+  <text x="256" y="370" text-anchor="middle" fill="#e64a19" font-family="Arial, sans-serif" font-size="42" font-weight="bold">IMPOSTOR</text>
+</svg>
