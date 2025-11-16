@@ -4,11 +4,77 @@ import { PlayerState } from '../../../lib/types';
 import { Box, Button, Card, Typography, TextField, Chip, Stack, Divider, List, ListItem, ListItemText } from '@mui/material';
 import { useConnection } from '../../contexts/ConnectionContext';
 import { CATEGORY_DISPLAY_INFO } from '../../../lib/words';
+// Detectar Safari
+function isSafari(): boolean {
+  if (typeof window === 'undefined') return false;
+  const ua = window.navigator.userAgent;
+  return /Safari/.test(ua) && !/Chrome/.test(ua) && !/Chromium/.test(ua);
+}
+
 // Leer playerId sólo en cliente tras el montaje para evitar discrepancias SSR/CSR y errores de hidratación.
 function readPlayerIdClient(): string | undefined {
   const pidParam = new URLSearchParams(window.location.search).get('pid');
   const stored = sessionStorage.getItem('playerId');
   return pidParam || stored || undefined;
+}
+
+// Función para detectar si perdimos la sesión del juego
+function detectSessionLoss(data: any, playerId: string): boolean {
+  if (!data || !data.game || !data.player) {
+    console.warn('[Session] Missing game or player data');
+    return true;
+  }
+  
+  // Verificar que nuestro player ID existe en la lista de jugadores
+  const playerExists = data.game.players.some((p: any) => p.id === playerId);
+  if (!playerExists) {
+    console.warn('[Session] Player ID not found in game players');
+    return true;
+  }
+  
+  return false;
+}
+
+// Función de recuperación automática para Safari
+async function safariRecovery(code: string, currentPlayerId: string): Promise<string | null> {
+  if (!isSafari()) return null;
+  
+  try {
+    console.log('[Safari] Attempting session recovery');
+    
+    // Intentar obtener información del juego sin playerId
+    const gameRes = await fetch(`/api/game/${code}/state`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    });
+    
+    if (!gameRes.ok) return null;
+    
+    const gameData = await gameRes.json();
+    if (!gameData || !gameData.game) return null;
+    
+    // Buscar si hay un jugador con el mismo nombre que tenemos guardado
+    const savedName = sessionStorage.getItem('playerName');
+    if (!savedName) return null;
+    
+    const existingPlayer = gameData.game.players.find((p: any) => 
+      p.name.toLowerCase() === savedName.toLowerCase()
+    );
+    
+    if (existingPlayer) {
+      console.log('[Safari] Found existing player, recovering session');
+      sessionStorage.setItem('playerId', existingPlayer.id);
+      return existingPlayer.id;
+    }
+    
+  } catch (error) {
+    console.warn('[Safari] Recovery failed:', error);
+  }
+  
+  return null;
 }
 
 export default function GameLobby({ params }: { params: { code: string } }) {
@@ -66,8 +132,38 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           playerName: data?.player?.name 
         });
         
+        // Detectar pérdida de sesión
+        if (detectSessionLoss(data, playerId)) {
+          console.warn('[Refresh] Session loss detected');
+          
+          // Intentar recuperación automática para Safari
+          if (isSafari()) {
+            const recoveredId = await safariRecovery(code, playerId);
+            if (recoveredId) {
+              console.log('[Safari] Session recovered successfully');
+              setPlayerId(recoveredId);
+              // Reintentar con el ID recuperado
+              setTimeout(() => refresh(), 1000);
+              return;
+            }
+          }
+          
+          // Si no se puede recuperar, limpiar y redirigir
+          console.log('[Refresh] Cannot recover session, redirecting to home');
+          sessionStorage.clear();
+          setState(null);
+          setPlayerId(undefined);
+          setName('');
+          if (typeof window !== 'undefined') {
+            window.location.href = '/';
+          }
+          return;
+        }
+        
         // Verificar integridad completa de los datos
         if (data && data.game && data.player && data.player.name) {
+          // Guardar nombre del jugador para posible recuperación
+          sessionStorage.setItem('playerName', data.player.name);
           setState(data);
         } else {
           console.warn('[Refresh] Incomplete data received, structure check failed');
@@ -109,28 +205,68 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       if (pid) {
         // Verificar que el playerId sea válido antes de usarlo
         fetch(`/api/game/${code}/state?pid=${pid}`)
-          .then(res => {
+          .then(async res => {
             if (res.ok) {
-              return res.json().then(data => {
-                // Verificar que el jugador tenga nombre y esté correctamente registrado
-                if (data && data.player && data.player.name) {
-                  sessionStorage.setItem('playerId', pid);
-                  setPlayerId(pid);
-                } else {
-                  // Si el jugador no tiene nombre o datos corruptos, limpiar todo
-                  sessionStorage.clear();
-                  setPlayerId(undefined);
-                  setName('');
+              const data = await res.json();
+              // Verificar que el jugador tenga nombre y esté correctamente registrado
+              if (data && data.player && data.player.name && !detectSessionLoss(data, pid)) {
+                sessionStorage.setItem('playerId', pid);
+                sessionStorage.setItem('playerName', data.player.name);
+                setPlayerId(pid);
+              } else {
+                console.warn('[Init] Session validation failed, attempting recovery');
+                
+                // Intentar recuperación para Safari
+                if (isSafari()) {
+                  const recoveredId = await safariRecovery(code, pid);
+                  if (recoveredId) {
+                    console.log('[Init] Safari recovery successful');
+                    sessionStorage.setItem('playerId', recoveredId);
+                    setPlayerId(recoveredId);
+                    return;
+                  }
                 }
-              });
+                
+                // Si no se puede recuperar, limpiar todo
+                console.log('[Init] Cannot recover, clearing session');
+                sessionStorage.clear();
+                setPlayerId(undefined);
+                setName('');
+              }
             } else {
-              // Si el playerId no es válido, limpiar completamente
+              console.warn('[Init] Invalid playerId, attempting recovery');
+              
+              // Intentar recuperación para Safari
+              if (isSafari()) {
+                const recoveredId = await safariRecovery(code, pid);
+                if (recoveredId) {
+                  console.log('[Init] Safari recovery successful');
+                  sessionStorage.setItem('playerId', recoveredId);
+                  setPlayerId(recoveredId);
+                  return;
+                }
+              }
+              
+              // Si no se puede recuperar, limpiar completamente
               sessionStorage.clear();
               setPlayerId(undefined);
               setName('');
             }
           })
-          .catch(() => {
+          .catch(async () => {
+            console.warn('[Init] Network error, attempting recovery');
+            
+            // Intentar recuperación para Safari
+            if (isSafari()) {
+              const recoveredId = await safariRecovery(code, pid);
+              if (recoveredId) {
+                console.log('[Init] Safari recovery successful');
+                sessionStorage.setItem('playerId', recoveredId);
+                setPlayerId(recoveredId);
+                return;
+              }
+            }
+            
             // En caso de error de red, limpiar completamente
             sessionStorage.clear();
             setPlayerId(undefined);
@@ -294,6 +430,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       // Verificar que la respuesta tenga los datos esperados
       if (data && data.playerId) {
         sessionStorage.setItem('playerId', data.playerId);
+        sessionStorage.setItem('playerName', name); // Guardar nombre para recuperación
         setPlayerId(data.playerId);
         setName('');
         setTimeout(refresh, 300);
