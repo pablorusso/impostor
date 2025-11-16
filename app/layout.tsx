@@ -18,6 +18,7 @@ export const metadata = {
       { url: '/icon-512x512.png', sizes: '512x512', type: 'image/png' },
     ],
     apple: [
+      { url: '/icon-180x180.png', sizes: '180x180', type: 'image/png' },
       { url: '/icon-192x192.png', sizes: '192x192', type: 'image/png' },
     ],
   },
@@ -37,10 +38,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#e64a19" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Impostor Game" />
-        <link rel="apple-touch-icon" href="/icon-192x192.png" />
+        <link rel="apple-touch-icon" href="/icon-180x180.png" sizes="180x180" />
+        <link rel="apple-touch-icon" href="/icon-192x192.png" sizes="192x192" />
         <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="application-name" content="Impostor Game" />
+        <meta name="msapplication-TileColor" content="#e64a19" />
+        <meta name="msapplication-config" content="/browserconfig.xml" />
       </head>
       <body style={{fontFamily:'system-ui, -apple-system, Segoe UI, Roboto, sans-serif', backgroundColor:'#fbe9e7', margin:0}}>
         <ConnectionProvider>

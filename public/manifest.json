@@ -3,6 +3,7 @@
   "short_name": "Impostor",
   "description": "Juego de palabras tipo impostor para jugar en persona",
   "start_url": "/",
+  "id": "/",
   "display": "standalone",
   "background_color": "#fbe9e7",
   "theme_color": "#e64a19",
@@ -13,13 +14,25 @@
       "src": "/icon-192x192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "maskable any"
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "/icon-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "maskable any"
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ],
   "categories": ["games", "entertainment"],
