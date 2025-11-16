@@ -7,6 +7,7 @@ export type GameEventType =
   | 'round-start'
   | 'round-end'
   | 'round-next'
+  | 'next-turn'
   | 'game-close';
 
 type BroadcastState = Omit<

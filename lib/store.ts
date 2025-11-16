@@ -47,6 +47,19 @@ export function startRound(code: string): boolean {
   const game = getStore().games.get(code.toUpperCase());
   if (!game) return false;
   if (game.players.length < 3) return false; // mínimo
+  
+  // Initialize turn order if not set (first round)
+  if (!game.turnOrder || game.turnOrder.length !== game.players.length) {
+    const playerIds = [...game.players.map(p => p.id)];
+    // Shuffle the turn order
+    for (let i = playerIds.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [playerIds[i], playerIds[j]] = [playerIds[j], playerIds[i]];
+    }
+    game.turnOrder = playerIds;
+    game.currentTurnIndex = 0;
+  }
+  
   const impostorIndex = Math.floor(Math.random() * game.players.length);
   const impostorId = game.players[impostorIndex].id;
   const word = game.words[Math.floor(Math.random() * game.words.length)];
@@ -63,6 +76,14 @@ export function nextRound(code: string): boolean {
   if (game.currentRound) {
     game.currentRound.endedAt = Date.now();
   }
+  
+  // Rotate turn order for new round (move first player to end, others shift left)
+  if (game.turnOrder && game.turnOrder.length > 1) {
+    const firstPlayer = game.turnOrder.shift()!; // Remove first player
+    game.turnOrder.push(firstPlayer); // Add to end
+  }
+  game.currentTurnIndex = 0;
+  
   const impostorIndex = Math.floor(Math.random() * game.players.length);
   const impostorId = game.players[impostorIndex].id;
   const word = game.words[Math.floor(Math.random() * game.words.length)];
@@ -87,6 +108,15 @@ export function closeGame(code: string): boolean {
   return true;
 }
 
+export function nextTurn(code: string): boolean {
+  const game = getStore().games.get(code.toUpperCase());
+  if (!game || !game.currentRound || !game.turnOrder || game.currentTurnIndex === undefined) return false;
+  
+  // Advance to next turn, wrapping around to 0 if at end
+  game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length;
+  return true;
+}
+
 export function getState(code: string, playerId?: string): PlayerState | null {
   const game = getStore().games.get(code.toUpperCase());
   if (!game) return null;
@@ -96,11 +126,23 @@ export function getState(code: string, playerId?: string): PlayerState | null {
   if (round && player) {
     wordForPlayer = player.id === round.impostorId ? null : round.word;
   }
+  
+  // Get current turn information
+  let currentTurnPlayer: Player | undefined = undefined;
+  let isMyTurn = false;
+  if (game.turnOrder && game.currentTurnIndex !== undefined && round) {
+    const currentTurnPlayerId = game.turnOrder[game.currentTurnIndex];
+    currentTurnPlayer = game.players.find(p => p.id === currentTurnPlayerId);
+    isMyTurn = !!player && player.id === currentTurnPlayerId;
+  }
+  
   return {
     isHost: !!player && player.id === game.hostId,
     game,
     player,
     round,
     wordForPlayer,
+    currentTurnPlayer,
+    isMyTurn,
   };
 }

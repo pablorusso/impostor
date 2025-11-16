@@ -17,6 +17,8 @@ export interface Game {
   players: Player[];
   words: string[];
   currentRound?: Round;
+  turnOrder?: string[]; // Array of player IDs in turn order
+  currentTurnIndex?: number; // Index into turnOrder
 }
 
 export interface PlayerState {
@@ -25,4 +27,6 @@ export interface PlayerState {
   player?: Player;
   round?: Round;
   wordForPlayer?: string | null; // null -> impostor, string -> palabra, undefined -> no iniciada
+  currentTurnPlayer?: Player; // Who's currently playing
+  isMyTurn?: boolean; // Is it this player's turn?
 }
