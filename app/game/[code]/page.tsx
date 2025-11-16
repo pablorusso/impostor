@@ -152,85 +152,86 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     // Intentar SSE primero, con fallback a polling mejorado para Vercel
     if (!usePolling) {
       try {
-        const es = new EventSource(`/api/game/${code}/events`);
-        sseRef.current = es;
-        
         let sseWorking = false;
         let reconnectAttempts = 0;
         const maxAttempts = 3;
         
-        const sseTimeout = setTimeout(() => {
-          if (!sseWorking) {
-            console.log('[SSE] Connection timeout, switching to polling');
-            es.close();
-            setUsePolling(true);
-          }
-        }, 20000); // Aumentar timeout para Vercel
-        
-        es.onopen = () => {
-          console.log('[SSE] Connection established');
-          sseWorking = true;
-          reconnectAttempts = 0;
-          clearTimeout(sseTimeout);
-        };
-        
-        es.onmessage = (ev) => {
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg.type === 'ping') {
-              console.log('[SSE] Heartbeat received');
-              return;
-            }
-            if (msg.type === 'game-close') {
-              console.log('[SSE] Game closed by host');
-              sessionStorage.clear();
-              window.location.href = '/';
-              return;
-            }
-            if ([
-              'init',
-              'player-join',
-              'player-leave', 
-              'round-start',
-              'round-next',
-              'round-end',
-              'next-turn'
-            ].includes(msg.type)) {
-              console.log(`[SSE] Event received: ${msg.type}`);
-              refresh();
-            }
-          } catch (error) {
-            console.warn('[SSE] Failed to parse message:', error);
-          }
-        };
-        
-        es.onerror = (event) => {
-          console.log(`[SSE] Connection error (attempt ${reconnectAttempts + 1}):`, event);
-          clearTimeout(sseTimeout);
-          es.close();
+        const createSSEConnection = () => {
+          const es = new EventSource(`/api/game/${code}/events`);
+          sseRef.current = es;
           
-          // Retry limitado antes de caer a polling
-          if (reconnectAttempts < maxAttempts) {
-            reconnectAttempts++;
-            setTimeout(() => {
-              if (!sseRef.current || sseRef.current.readyState === EventSource.CLOSED) {
-                const newEs = new EventSource(`/api/game/${code}/events`);
-                sseRef.current = newEs;
-                // Reasignar eventos al nuevo EventSource
-                newEs.onopen = es.onopen;
-                newEs.onmessage = es.onmessage;
-                newEs.onerror = es.onerror;
+          const sseTimeout = setTimeout(() => {
+            if (!sseWorking) {
+              console.log('[SSE] Connection timeout, switching to polling');
+              es.close();
+              setUsePolling(true);
+            }
+          }, 20000); // Timeout más generoso
+          
+          es.onopen = () => {
+            console.log('[SSE] Connection established');
+            sseWorking = true;
+            reconnectAttempts = 0;
+            clearTimeout(sseTimeout);
+          };
+          
+          es.onmessage = (ev) => {
+            try {
+              const msg = JSON.parse(ev.data);
+              if (msg.type === 'ping') {
+                console.log('[SSE] Heartbeat received');
+                return;
               }
-            }, Math.min(1000 * Math.pow(2, reconnectAttempts), 5000));
-          } else {
-            console.log('[SSE] Max reconnection attempts reached, switching to polling');
-            setUsePolling(true);
-          }
+              if (msg.type === 'game-close') {
+                console.log('[SSE] Game closed by host');
+                sessionStorage.clear();
+                window.location.href = '/';
+                return;
+              }
+              if ([
+                'init',
+                'player-join',
+                'player-leave', 
+                'round-start',
+                'round-next',
+                'round-end',
+                'next-turn'
+              ].includes(msg.type)) {
+                console.log(`[SSE] Event received: ${msg.type}`);
+                refresh();
+              }
+            } catch (error) {
+              console.warn('[SSE] Failed to parse message:', error);
+            }
+          };
+          
+          es.onerror = (event) => {
+            console.log(`[SSE] Connection error (attempt ${reconnectAttempts + 1}):`, event);
+            clearTimeout(sseTimeout);
+            es.close();
+            
+            // Retry limitado antes de caer a polling
+            if (reconnectAttempts < maxAttempts) {
+              reconnectAttempts++;
+              setTimeout(() => {
+                createSSEConnection();
+              }, Math.min(1000 * Math.pow(2, reconnectAttempts), 10000));
+            } else {
+              console.log('[SSE] Max reconnection attempts reached, switching to polling');
+              setUsePolling(true);
+            }
+          };
+          
+          return () => {
+            clearTimeout(sseTimeout);
+            es.close();
+          };
         };
+        
+        const cleanup = createSSEConnection();
         
         return () => {
-          clearTimeout(sseTimeout);
-          es.close();
+          cleanup();
           sseRef.current = null;
         };
       } catch (error) {
