@@ -1,6 +1,6 @@
 import { nanoid } from 'nanoid';
 import { Game, Player, PlayerState, Round } from './types';
-import { DEFAULT_WORDS } from './words';
+import { DEFAULT_WORDS, findWordCategory } from './words';
 
 interface Store {
   games: Map<string, Game>;
@@ -108,7 +108,7 @@ function getStore(): Store {
   return store;
 }
 
-export function createGame(hostName: string, words?: string[]): { code: string; hostId: string; playerId: string } {
+export function createGame(hostName: string, words?: string[], shareCategories?: boolean): { code: string; hostId: string; playerId: string } {
   const store = getStore();
   let code: string;
   do {
@@ -121,6 +121,7 @@ export function createGame(hostName: string, words?: string[]): { code: string; 
     hostId,
     players: [hostPlayer],
     words: (words && words.length > 0 ? words : DEFAULT_WORDS).map((w: string) => w.trim()).filter(Boolean),
+    shareCategories: shareCategories || false,
   };
   
   // Añadir timestamp para tracking
@@ -171,7 +172,8 @@ export function startRound(code: string): boolean {
   const impostorIndex = Math.floor(Math.random() * game.players.length);
   const impostorId = game.players[impostorIndex].id;
   const word = game.words[Math.floor(Math.random() * game.words.length)];
-  const round: Round = { id: nanoid(), impostorId, word, startedAt: Date.now() };
+  const category = findWordCategory(word);
+  const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
   game.currentRound = round;
   return true;
 }
@@ -207,7 +209,8 @@ export function nextRound(code: string): boolean {
   const impostorIndex = Math.floor(Math.random() * game.players.length);
   const impostorId = game.players[impostorIndex].id;
   const word = game.words[Math.floor(Math.random() * game.words.length)];
-  const round: Round = { id: nanoid(), impostorId, word, startedAt: Date.now() };
+  const category = findWordCategory(word);
+  const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
   game.currentRound = round;
   return true;
 }
@@ -302,8 +305,21 @@ export function getState(code: string, playerId?: string): PlayerState | null {
   const player = playerId ? game.players.find((p: Player) => p.id === playerId) : undefined;
   const round = game.currentRound;
   let wordForPlayer: string | null | undefined = undefined;
+  let categoryForPlayer: string | undefined = undefined;
   if (round && player) {
-    wordForPlayer = player.id === round.impostorId ? null : round.word;
+    const isImpostor = player.id === round.impostorId;
+    if (isImpostor) {
+      // El impostor ve null para la palabra
+      wordForPlayer = null;
+      // Si shareCategories está activado, el impostor también ve la categoría
+      if (game.shareCategories) {
+        categoryForPlayer = round.category;
+      }
+    } else {
+      // Los jugadores normales ven la palabra y siempre ven la categoría
+      wordForPlayer = round.word;
+      categoryForPlayer = round.category;
+    }
   }
   
   // Get current turn information
@@ -321,6 +337,7 @@ export function getState(code: string, playerId?: string): PlayerState | null {
     player,
     round,
     wordForPlayer,
+    categoryForPlayer,
     currentTurnPlayer,
     isMyTurn,
   };

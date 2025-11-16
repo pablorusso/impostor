@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { PlayerState } from '../../../lib/types';
 import { Box, Button, Card, Typography, TextField, Chip, Stack, Divider, List, ListItem, ListItemText } from '@mui/material';
 import { useConnection } from '../../contexts/ConnectionContext';
+import { CATEGORY_DISPLAY_INFO } from '../../../lib/words';
 // Leer playerId sólo en cliente tras el montaje para evitar discrepancias SSR/CSR y errores de hidratación.
 function readPlayerIdClient(): string | undefined {
   const pidParam = new URLSearchParams(window.location.search).get('pid');
@@ -243,7 +244,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         pollingRef.current = null;
       }
     };
-  }, [code, playerId]);
+  }, [code, playerId, setConnectionStatus, setRetryCount]);
 
   // Detectar nueva ronda e iniciar animación
   useEffect(() => {
@@ -356,6 +357,10 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
   const isRoundActive = !!state?.round;
   const wordVisible = isRoundActive ? (state?.wordForPlayer === null ? 'Eres el IMPOSTOR' : state?.wordForPlayer) : null;
+  
+  // Mostrar categoría si está disponible
+  const categoryVisible = state?.categoryForPlayer;
+  const categoryInfo = categoryVisible ? CATEGORY_DISPLAY_INFO[categoryVisible as keyof typeof CATEGORY_DISPLAY_INFO] : null;
 
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: { xs: 1, sm: 2 }, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -546,6 +551,26 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     justifyContent: 'center',
                     overflow: 'hidden'
                   }}>
+                    {/* Categoría en esquina inferior derecha - solo visible cuando no hay countdown */}
+                    {categoryInfo && !wordRevealing && (
+                      <Box sx={{ 
+                        position: 'absolute',
+                        bottom: 4,
+                        right: 4,
+                        fontSize: 10,
+                        fontWeight: 500,
+                        color: '#e65100',
+                        bgcolor: '#fff3e0',
+                        px: 1,
+                        py: 0.25,
+                        borderRadius: 1,
+                        border: '1px solid #ffb74d',
+                        textTransform: 'none',
+                        letterSpacing: 0
+                      }}>
+                        {categoryInfo.name}
+                      </Box>
+                    )}
                     {wordRevealing ? (
                       // Contador y animación de revelado
                       <Box sx={{ 
@@ -561,7 +586,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                             fontSize: 28, 
                             fontWeight: 'bold', 
                             color: '#1976d2',
-                            animation: 'pulse 1s infinite' 
+                            animation: 'pulse 1s infinite'
                           }}>
                             {countdown}
                           </Typography>
@@ -591,14 +616,14 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                               }
                             }
                           }}>
-                            {wordVisible === 'Eres el IMPOSTOR' ? '🎭 ' + wordVisible : wordVisible ?? '...'}
+                            {wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...'}
                           </Box>
                         )}
                       </Box>
                     ) : (
                       // Palabra visible normalmente
-                          <Box sx={{ width: '100%', textAlign: 'center' }}>
-                        {wordVisible === 'Eres el IMPOSTOR' ? '🎭 ' + wordVisible : wordVisible ?? '...'}
+                      <Box sx={{ width: '100%', textAlign: 'center' }}>
+                        {wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...'}
                       </Box>
                     )}
                   </Box>

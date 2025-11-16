@@ -65,8 +65,8 @@ export const WORD_CATEGORIES = {
 };
 
 export const DEFAULT_WORDS = [
-  ...WORD_CATEGORIES.animales.slice(0, 8),
-  ...WORD_CATEGORIES.comidas.slice(0, 8),
+  ...WORD_CATEGORIES.animales.slice(0, 10),
+  ...WORD_CATEGORIES.comidas.slice(0, 10),
   ...WORD_CATEGORIES.lugares.slice(0, 6),
   ...WORD_CATEGORIES.deportes.slice(0, 6),
   ...WORD_CATEGORIES.tecnologia.slice(0, 6),
@@ -74,3 +74,30 @@ export const DEFAULT_WORDS = [
   ...WORD_CATEGORIES.objetos.slice(0, 10),
   ...WORD_CATEGORIES.otros.slice(0, 5)
 ];
+
+// Función para encontrar la categoría de una palabra
+export function findWordCategory(word: string): string {
+  const normalizedWord = word.toLowerCase().trim();
+  
+  for (const [category, words] of Object.entries(WORD_CATEGORIES)) {
+    if (words.some(w => w.toLowerCase() === normalizedWord)) {
+      return category;
+    }
+  }
+  
+  // Si no se encuentra en ninguna categoría predefinida, devolver 'personalizada'
+  return 'personalizada';
+}
+
+// Información de las categorías para mostrar al usuario
+export const CATEGORY_DISPLAY_INFO = {
+  animales: { name: '🐾 Animales', emoji: '🐾' },
+  comidas: { name: '🍕 Comidas', emoji: '🍕' },
+  lugares: { name: '🏖️ Lugares', emoji: '🏖️' },
+  deportes: { name: '⚽ Deportes', emoji: '⚽' },
+  tecnologia: { name: '💻 Tecnología', emoji: '💻' },
+  musica: { name: '🎵 Música', emoji: '🎵' },
+  objetos: { name: '🏠 Objetos', emoji: '🏠' },
+  otros: { name: '✨ Otros', emoji: '✨' },
+  personalizada: { name: '✏️ Personalizada', emoji: '✏️' }
+};

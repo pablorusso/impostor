@@ -31,5 +31,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
 export function useConnection() {
   const context = useContext(ConnectionContext);
-  return context; // Puede ser null si no está en contexto de juego
+  if (!context) {
+    // Valor por defecto cuando no hay contexto (páginas sin juego)
+    return {
+      connectionStatus: 'connected' as ConnectionStatus,
+      retryCount: 0,
+      setConnectionStatus: () => {},
+      setRetryCount: () => {}
+    };
+  }
+  return context;
 }

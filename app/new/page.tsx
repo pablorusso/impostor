@@ -20,6 +20,7 @@ export default function NewGamePage() {
   const [selectedCategories, setSelectedCategories] = useState<Record<string, boolean>>(
     Object.keys(CATEGORY_INFO).reduce((acc, cat) => ({ ...acc, [cat]: true }), {})
   );
+  const [shareCategories, setShareCategories] = useState(false);
 
   async function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -51,7 +52,7 @@ export default function NewGamePage() {
     }
     
     try {
-      const res = await fetch('/api/game', { method: 'POST', body: JSON.stringify({ hostName: name, words }) });
+      const res = await fetch('/api/game', { method: 'POST', body: JSON.stringify({ hostName: name, words, shareCategories }) });
       if (!res.ok) throw new Error('Error creando partida');
       const data = await res.json();
       const url = `/game/${data.code}?pid=${data.playerId}`;
@@ -119,6 +120,30 @@ export default function NewGamePage() {
               </Box>
               <Typography sx={{ color: '#666', fontSize: 12, mt: 1 }}>
                 Selecciona las categorías que quieres incluir en el juego
+              </Typography>
+            </FormGroup>
+          </Box>
+          
+          <Box sx={{ textAlign: 'left' }}>
+            <Typography variant="h6" sx={{ mb: 1, color: '#1976d2' }}>
+              🔍 Opciones del impostor
+            </Typography>
+            <FormGroup sx={{ bgcolor: '#fff', p: 2, borderRadius: 1, border: '1px solid #ddd' }}>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={shareCategories}
+                    onChange={(e) => setShareCategories(e.target.checked)}
+                    sx={{ color: '#1976d2' }}
+                  />
+                }
+                label="Compartir categoría con el impostor"
+                sx={{ fontSize: 14, margin: 0 }}
+              />
+              <Typography sx={{ color: '#666', fontSize: 12, mt: 1 }}>
+                {shareCategories 
+                  ? "✅ El impostor verá la categoría de la palabra (ej: 'Animales')"
+                  : "❌ El impostor solo verá 'Eres el IMPOSTOR' sin más pistas"}
               </Typography>
             </FormGroup>
           </Box>

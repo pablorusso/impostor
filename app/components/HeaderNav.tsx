@@ -5,6 +5,10 @@ import { useConnection } from '../contexts/ConnectionContext';
 
 export default function HeaderNav() {
   const { connectionStatus, retryCount } = useConnection();
+  
+  // Solo mostrar indicador si no estamos en estado 'connected' por defecto
+  const showIndicator = connectionStatus !== 'connected' || retryCount > 0;
+  
   return (
     <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', width:'100%'}}>
       <div style={{display:'flex', alignItems:'center', gap:'0.5rem'}}>
@@ -17,23 +21,25 @@ export default function HeaderNav() {
       </div>
       
       {/* Indicador de estado de conexión */}
-      <div style={{ 
-        display: 'flex', 
-        alignItems: 'center', 
-        gap: '0.25rem',
-        fontSize: '12px',
-        color: connectionStatus === 'connected' ? '#4caf50' : 
-               connectionStatus === 'connecting' ? '#ff9800' : '#f44336'
-      }}>
-        {connectionStatus === 'connected' && '🟢'}
-        {connectionStatus === 'connecting' && '🟡'}
-        {connectionStatus === 'error' && '🔴'}
-        <span style={{ fontSize: '10px', fontWeight: 500 }}>
-          {connectionStatus === 'connected' && 'Conectado'}
-          {connectionStatus === 'connecting' && 'Conectando...'}
-          {connectionStatus === 'error' && `Error (${retryCount}/10)`}
-        </span>
-      </div>
+      {showIndicator && (
+        <div style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: '0.25rem',
+          fontSize: '12px',
+          color: connectionStatus === 'connected' ? '#4caf50' : 
+                 connectionStatus === 'connecting' ? '#ff9800' : '#f44336'
+        }}>
+          {connectionStatus === 'connected' && '🟢'}
+          {connectionStatus === 'connecting' && '🟡'}
+          {connectionStatus === 'error' && '🔴'}
+          <span style={{ fontSize: '10px', fontWeight: 500 }}>
+            {connectionStatus === 'connected' && 'Conectado'}
+            {connectionStatus === 'connecting' && 'Conectando...'}
+            {connectionStatus === 'error' && `Error (${retryCount}/10)`}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
