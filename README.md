@@ -1,7 +1,6 @@
 # Impostor (Juego social)
 
 Aplicación web simple para repartir palabras en rondas entre jugadores, excepto el impostor que no recibe la palabra. El juego ocurre presencialmente; la web sólo gestiona rondas y asignaciones.
-Y
 ## 🔄 Estado de las Conexiones SSE (Nov 2024)
 
 **✅ Problemas Solucionados**:
@@ -12,6 +11,7 @@ Y
 - ✅ Timeouts conservadores para Edge Runtime (20s heartbeat, 5min max conexión)
 - ✅ Manejo de estados `isClosed` para evitar escrituras a streams cerrados
 - ✅ **Configuración Vercel corregida**: `vercel.json` fix para Edge Runtime
+- ✅ **Navegación mejorada**: Botón de home en header global siempre visible (Nov 2024)
 
 ## 🚀 Deploy en Vercel
 

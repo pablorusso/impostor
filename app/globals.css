@@ -1,2 +1,7 @@
 html,body {margin:0;font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fafafa;color:#222;} a {color:#0366d6;text-decoration:none;} a:hover{text-decoration:underline;} button {cursor:pointer;} input,button,textarea {font-family:inherit;} form {display:flex;flex-direction:column;gap:0.75rem;}
 .card {background:#fff;border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem;box-shadow:0 1px 2px rgba(0,0,0,0.06);} .row {display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;} .danger {color:#c00;} .muted {color:#666;font-size:0.85rem;}
+
+.home-btn:hover {
+  background-color: rgba(230, 74, 25, 0.1) !important;
+  text-decoration: none !important;
+}
