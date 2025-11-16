@@ -38,7 +38,7 @@ export default function HomePage() {
   // Show loading while checking for active games
   if (checking) {
     return (
-      <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+      <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: 2, pt: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start' }}>
         <Card sx={{ maxWidth: 400, width: '100%', p: 3, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
           <Typography variant="h5" sx={{ fontWeight: 600, color: '#e64a19', mb: 2 }}>
             🔍 Verificando partidas activas...
@@ -93,7 +93,8 @@ function ContinueGame({ gameCode, playerId }: { gameCode: string; playerId: stri
         size="large" 
         sx={{ fontSize: 18, px: 4, py: 1.5, borderRadius: 3, fontWeight: 600 }}
         onClick={() => {
-          window.location.href = `/game/${gameCode}?pid=${playerId}`;
+          // Navigate directly without pid parameter to avoid redirect
+          window.location.href = `/game/${gameCode}`;
         }}
       >
         🚀 Continuar partida
@@ -132,7 +133,7 @@ function CreateNewGameButton({ activeGame }: { activeGame: { code: string; playe
         sx={{ fontSize: 18, px: 4, py: 1.5, borderRadius: 3 }}
         onClick={handleCreateNew}
       >
-        {loading ? '⏳ Saliendo...' : '🎮 Crear nueva partida'}
+        {loading ? '⏳ Saliendo...' : '🎮 Nueva partida'}
       </Button>
     );
   }
@@ -140,7 +141,7 @@ function CreateNewGameButton({ activeGame }: { activeGame: { code: string; playe
   return (
     <Link href="/new" passHref legacyBehavior>
       <Button variant="contained" color="primary" size="large" sx={{ fontSize: 20, px: 4, py: 1.5, bgcolor: '#1e88e5', borderRadius: 3 }}>
-        🎮 Crear nueva partida
+        🎮 Nueva partida
       </Button>
     </Link>
   );
@@ -203,7 +204,7 @@ function JoinExisting({ activeGame }: { activeGame: { code: string; playerId: st
           disabled={loading}
           sx={{ fontSize: 18, px: 3, py: 1.2, bgcolor: '#1e88e5', borderRadius: 3 }}
         >
-          {loading ? '🔍 Verificando...' : '🎯 Ir al lobby'}
+          {loading ? '🔍 Verificando...' : '🎯 Ingresar'}
         </Button>
         {error && (
           <Typography color="error" sx={{ fontSize: 14, mt: 1 }}>

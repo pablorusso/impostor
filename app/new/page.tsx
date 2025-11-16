@@ -115,8 +115,8 @@ export default function NewGamePage() {
       });
       if (!res.ok) throw new Error('Error creando partida');
       const data = await res.json();
-      const url = `/game/${data.code}?pid=${data.playerId}`;
-      window.location.href = url;
+      // Navigate directly without pid parameter to avoid redirect
+      window.location.href = `/game/${data.code}`;
     } catch (err:any) {
       setError(err.message);
     } finally {
@@ -237,7 +237,7 @@ export default function NewGamePage() {
               mt: 1
             }}
           >
-            {loading ? '⏳ Creando...' : '🚀 Crear partida'}
+            {loading ? '⏳ Creando y uniendo...' : '🚀 Crear partida'}
           </Button>
           {error && (
             <Typography color="error" sx={{ fontSize: 16, fontWeight: 500 }}>

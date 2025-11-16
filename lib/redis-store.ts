@@ -458,6 +458,60 @@ export async function leaveGame(code: string, playerId: string): Promise<boolean
     return await closeGame(code);
   }
 
+  // Verificar si había una ronda activa y el jugador que abandona es el impostor
+  const wasImpostor = game.currentRound && game.currentRound.impostorId === playerId;
+  const logPrefix = isRedisAvailable() ? 'REDIS' : 'DEV';
+  
+  // Lógica especial según número de jugadores restantes y si era impostor
+  if (game.players.length < 3) {
+    // Si quedan menos de 3 jugadores, volver al lobby (terminar ronda actual)
+    if (game.currentRound) {
+      game.currentRound.endedAt = Date.now();
+      game.currentRound = undefined;
+      game.turnOrder = undefined;
+      game.currentTurnIndex = undefined;
+      
+      console.log(`[${logPrefix}] Round cancelled due to insufficient players in game ${code}`);
+    }
+  } else if (wasImpostor) {
+    // Si el impostor abandona y hay suficientes jugadores (>=3), pasar automáticamente a siguiente palabra
+    console.log(`[${logPrefix}] Impostor left game ${code}, starting next round automatically`);
+    
+    // Marcar fin de la ronda actual
+    if (game.currentRound) {
+      game.currentRound.endedAt = Date.now();
+    }
+
+    // Sincronizar turnOrder con jugadores actuales (ya filtrados arriba)
+    if (game.turnOrder) {
+      const currentPlayerIds = game.players.map(p => p.id);
+      const existingInOrder = game.turnOrder.filter(id => currentPlayerIds.includes(id));
+      const newPlayers = currentPlayerIds.filter(id => !game.turnOrder!.includes(id));
+      game.turnOrder = [...existingInOrder, ...newPlayers];
+
+      // Rotar orden de turnos para nueva ronda
+      if (game.turnOrder.length > 1) {
+        const firstPlayer = game.turnOrder.shift()!;
+        game.turnOrder.push(firstPlayer);
+      }
+    } else {
+      game.turnOrder = game.players.map(p => p.id);
+    }
+    game.currentTurnIndex = 0;
+
+    // Crear nueva ronda con nuevo impostor y nueva palabra
+    const impostorIndex = Math.floor(Math.random() * game.players.length);
+    const impostorId = game.players[impostorIndex].id;
+    const word = game.words[Math.floor(Math.random() * game.words.length)];
+    const category = findWordCategory(word);
+    const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
+    
+    game.currentRound = round;
+    
+    const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
+    console.log(`[${storeType}] New round auto-started after impostor left game ${code}: word=${word}, category=${category}, impostor=${impostorId}`);
+  }
+
   // Si el host se fue, transferir host automáticamente
   if (game.hostId === playerId && game.players.length > 0) {
     await transferHost(game);

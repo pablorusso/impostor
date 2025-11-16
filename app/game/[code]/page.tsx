@@ -91,6 +91,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [showTurnInfo, setShowTurnInfo] = useState(false);
   const [showControls, setShowControls] = useState(false);
   const [defaultName, setDefaultName] = useState('');
+  const [initializing, setInitializing] = useState(true);
 
   // Inicializar nombre por defecto una sola vez al montar
   useEffect(() => {
@@ -215,8 +216,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   // Inicializar playerId tras montaje.
   useEffect(() => {
     if (playerId === undefined) {
-      // Use persistent PlayerID system
-      const pid = PlayerSession.getPlayerId();
+      // Check URL parameter first, then fall back to persistent system
+      const urlPid = readPlayerIdClient();
+      const pid = urlPid || PlayerSession.getPlayerId();
       
       // Check if player has an active game first
       const checkActiveGame = async () => {
@@ -315,7 +317,11 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         }
       };
       
-      checkActiveGame();
+      checkActiveGame().finally(() => {
+        setInitializing(false);
+      });
+    } else {
+      setInitializing(false);
     }
   }, [playerId, code]);
 
@@ -364,6 +370,15 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           }
           
           const newState = await res.json();
+          
+          // Detectar si el jugador fue expulsado (juego existe pero jugador no está en la lista)
+          if (newState && newState.game && !newState.player) {
+            console.log('[Polling] Player no longer in game (expelled), redirecting to home');
+            sessionStorage.clear();
+            window.location.href = '/';
+            return;
+          }
+          
           const stateHash = JSON.stringify(newState);
           
           // Detectar cambios en el estado
@@ -540,12 +555,59 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }
 
+  async function kickPlayer(targetPlayerId: string, playerName: string) {
+    if (!confirm(`¿Estás seguro de que quieres expulsar a ${playerName}?`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/game/${code}/kick`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          hostPlayerId: playerId, 
+          targetPlayerId 
+        })
+      });
+
+      if (res.ok) {
+        console.log(`Player ${playerName} kicked successfully`);
+        setTimeout(refresh, 300); // Refrescar el estado del juego
+      } else {
+        const errorData = await res.json();
+        console.error('Error kicking player:', errorData.error);
+        alert(`Error al expulsar jugador: ${errorData.error}`);
+      }
+    } catch (error) {
+      console.error('Network error kicking player:', error);
+      alert('Error de red al expulsar jugador');
+    }
+  }
+
   const isRoundActive = !!state?.round;
   const wordVisible = isRoundActive ? (state?.wordForPlayer === null ? 'Eres el IMPOSTOR' : state?.wordForPlayer) : null;
   
   // Mostrar categoría si está disponible
   const categoryVisible = state?.categoryForPlayer;
   const categoryInfo = categoryVisible ? CATEGORY_DISPLAY_INFO[categoryVisible as keyof typeof CATEGORY_DISPLAY_INFO] : null;
+
+  // Show loading while initializing to avoid premature join form display
+  if (initializing) {
+    return (
+      <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: 2, pt: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start' }}>
+        <Card sx={{ p: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
+          <Typography variant="h5" sx={{ color: '#e64a19', mb: 2 }}>
+            🎪 Partida {code}
+          </Typography>
+          <Typography variant="body1" sx={{ color: '#1976d2' }}>
+            ⏳ Cargando...
+          </Typography>
+        </Card>
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: { xs: 1, sm: 2 }, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -620,7 +682,39 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               </Typography>
               <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent="center" sx={{ mb: 2 }}>
                 {state.game.players.map(p => (
-                  <Chip key={p.id} label={p.name} color={p.id === playerId ? 'primary' : 'default'} sx={{ fontSize: 16, px: 1.5, mb: 0.5 }} />
+                  <Box key={p.id} sx={{ position: 'relative', display: 'inline-flex' }}>
+                    <Chip 
+                      label={p.name} 
+                      color={p.id === playerId ? 'primary' : 'default'} 
+                      sx={{ fontSize: 16, px: 1.5, mb: 0.5 }} 
+                    />
+                    {state.isHost && p.id !== playerId && (
+                      <Button
+                        size="small"
+                        onClick={() => kickPlayer(p.id, p.name)}
+                        sx={{
+                          position: 'absolute',
+                          top: -8,
+                          right: -8,
+                          minWidth: 20,
+                          width: 20,
+                          height: 20,
+                          borderRadius: '50%',
+                          bgcolor: '#f44336',
+                          color: 'white',
+                          fontSize: 16,
+                          fontWeight: 'bold',
+                          p: 0,
+                          '&:hover': {
+                            bgcolor: '#d32f2f'
+                          },
+                          zIndex: 1
+                        }}
+                      >
+                        ×
+                      </Button>
+                    )}
+                  </Box>
                 ))}
               </Stack>
               
@@ -830,7 +924,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
                     onClick={leaveGame}
                   >
-                    🚪 Abandonar partida
+                    🚪 Abandonar
                   </Button>
                   <Button 
                     variant="outlined" 
@@ -839,7 +933,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }}
                     onClick={closeGame}
                   >
-                    🏁 Finalizar juego
+                    🏁 Finalizar
                   </Button>
                 </Box>
               )}
@@ -854,7 +948,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
                     onClick={leaveGame}
                   >
-                    🚪 Abandonar partida
+                    🚪 Abandonar
                   </Button>
                   <Button 
                     variant="outlined" 
@@ -863,7 +957,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }}
                     onClick={closeGame}
                   >
-                    🏁 Finalizar juego
+                    🏁 Finalizar
                   </Button>
                 </Box>
               )}
@@ -878,7 +972,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
                     onClick={leaveGame}
                   >
-                    🚪 Abandonar partida
+                    🚪 Abandonar
                   </Button>
                 </Box>
               )}
@@ -907,7 +1001,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               <ListItemText primary="El jugador activo (y el host) pueden pasar al siguiente turno." />
             </ListItem>
             <ListItem>
-              <ListItemText primary="Conversad y tratad de descubrir al impostor." />
+              <ListItemText primary="Conversen y traten de descubrir al impostor." />
             </ListItem>
           </List>
         </Card>
