@@ -19,22 +19,52 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [wordRevealing, setWordRevealing] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [lastRoundId, setLastRoundId] = useState<string | null>(null);
+  const [showTurnInfo, setShowTurnInfo] = useState(false);
+  const [showControls, setShowControls] = useState(false);
+  const [showEndGameButton, setShowEndGameButton] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!playerId) return;
-    const res = await fetch(`/api/game/${code}/state?pid=${playerId}`);
-    if (res.status === 404) {
-      // Sala cerrada: limpiar y redirigir a inicio.
-      sessionStorage.removeItem('playerId');
-      setState(null);
-      if (typeof window !== 'undefined') {
-        window.location.href = '/';
+    try {
+      const res = await fetch(`/api/game/${code}/state?pid=${playerId}`);
+      if (res.status === 404) {
+        // Sala cerrada o no existe: limpiar completamente y redirigir a inicio.
+        sessionStorage.clear();
+        setState(null);
+        setPlayerId(undefined);
+        setName('');
+        if (typeof window !== 'undefined') {
+          window.location.href = '/';
+        }
+        return;
       }
-      return;
-    }
-    if (res.ok) {
-      const data = await res.json();
-      setState(data);
+      if (res.ok) {
+        const data = await res.json();
+        // Verificar que los datos del jugador sean consistentes
+        if (data && data.player && data.player.name) {
+          setState(data);
+        } else {
+          // Si los datos están corruptos, limpiar y recargar
+          sessionStorage.clear();
+          setPlayerId(undefined);
+          setState(null);
+          setName('');
+          // Recargar la página para empezar limpio
+          window.location.reload();
+        }
+      } else {
+        // Error del servidor, limpiar sesión
+        sessionStorage.clear();
+        setPlayerId(undefined);
+        setState(null);
+        setName('');
+      }
+    } catch (error) {
+      // Error de red, limpiar sesión
+      sessionStorage.clear();
+      setPlayerId(undefined);
+      setState(null);
+      setName('');
     }
   }, [playerId, code]);
 
@@ -43,11 +73,38 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     if (playerId === undefined) {
       const pid = readPlayerIdClient();
       if (pid) {
-        sessionStorage.setItem('playerId', pid);
-        setPlayerId(pid);
+        // Verificar que el playerId sea válido antes de usarlo
+        fetch(`/api/game/${code}/state?pid=${pid}`)
+          .then(res => {
+            if (res.ok) {
+              return res.json().then(data => {
+                // Verificar que el jugador tenga nombre y esté correctamente registrado
+                if (data && data.player && data.player.name) {
+                  sessionStorage.setItem('playerId', pid);
+                  setPlayerId(pid);
+                } else {
+                  // Si el jugador no tiene nombre o datos corruptos, limpiar todo
+                  sessionStorage.clear();
+                  setPlayerId(undefined);
+                  setName('');
+                }
+              });
+            } else {
+              // Si el playerId no es válido, limpiar completamente
+              sessionStorage.clear();
+              setPlayerId(undefined);
+              setName('');
+            }
+          })
+          .catch(() => {
+            // En caso de error de red, limpiar completamente
+            sessionStorage.clear();
+            setPlayerId(undefined);
+            setName('');
+          });
       }
     }
-  }, [playerId]);
+  }, [playerId, code]);
 
   // Suscripción SSE para eventos del juego (elimina polling continuo)
   const sseRef = useRef<EventSource | null>(null);
@@ -71,7 +128,8 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           'player-join',
           'round-start',
           'round-next',
-          'round-end'
+          'round-end',
+          'next-turn'
         ].includes(msg.type)) {
           refresh();
         }
@@ -93,6 +151,19 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       setLastRoundId(state.round.id);
       setWordRevealing(true);
       setCountdown(3);
+      setShowTurnInfo(false);
+      setShowControls(false);
+      setShowEndGameButton(false);
+      
+      // Mostrar información de turno después de 4 segundos de la palabra
+      setTimeout(() => {
+        setShowTurnInfo(true);
+      }, 4000);
+      
+      // Mostrar controles después de 4.8 segundos
+      setTimeout(() => {
+        setShowControls(true);
+      }, 4800);
     }
   }, [state?.round, lastRoundId]);
 
@@ -106,6 +177,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     } else if (wordRevealing && countdown === 0) {
       setTimeout(() => {
         setWordRevealing(false);
+        setShowEndGameButton(true); // Mostrar botón finalizar cuando aparece la palabra
       }, 500); // Pequeño delay para la animación final
     }
   }, [countdown, wordRevealing]);
@@ -113,14 +185,30 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   async function join() {
     setJoining(true); setError(null);
     try {
+      // Limpiar sesión previa antes de unirse a nueva partida
+      sessionStorage.clear();
+      
       const res = await fetch(`/api/game/${code}/join`, { method: 'POST', body: JSON.stringify({ name }) });
       if (!res.ok) throw new Error('No se pudo unir');
       const data = await res.json();
-      sessionStorage.setItem('playerId', data.playerId);
-      setPlayerId(data.playerId);
-      setName('');
-      setTimeout(refresh, 300);
-    } catch (e:any) { setError(e.message);} finally { setJoining(false); }
+      
+      // Verificar que la respuesta tenga los datos esperados
+      if (data && data.playerId) {
+        sessionStorage.setItem('playerId', data.playerId);
+        setPlayerId(data.playerId);
+        setName('');
+        setTimeout(refresh, 300);
+      } else {
+        throw new Error('Respuesta inválida del servidor');
+      }
+    } catch (e:any) { 
+      setError(e.message);
+      // Limpiar en caso de error
+      sessionStorage.clear();
+      setPlayerId(undefined);
+    } finally { 
+      setJoining(false); 
+    }
   }
 
   async function startRound() {
@@ -131,10 +219,21 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     await fetch(`/api/game/${code}/next-round`, { method: 'POST' });
     setTimeout(refresh, 300);
   }
+  async function nextTurn() {
+    await fetch(`/api/game/${code}/next-turn`, { method: 'POST' });
+    setTimeout(refresh, 300);
+  }
   async function closeGame() {
-    const res = await fetch(`/api/game/${code}/close`, { method: 'POST' });
-    if (res.ok) {
-      sessionStorage.removeItem('playerId');
+    try {
+      const res = await fetch(`/api/game/${code}/close`, { method: 'POST' });
+      if (res.ok || res.status === 404) {
+        // Si el juego se cerró correctamente o ya no existe (404), limpiar y redirigir
+        sessionStorage.clear();
+        window.location.href = '/';
+      }
+    } catch (error) {
+      // En caso de error de red, también limpiar y redirigir
+      sessionStorage.clear();
       window.location.href = '/';
     }
   }
@@ -187,7 +286,20 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                 👋 Unirte
               </Typography>
               <Stack direction="row" spacing={2} justifyContent="center" alignItems="center" sx={{ mb: 2 }}>
-                <TextField value={name} onChange={e=>setName(e.target.value)} placeholder="Tu nombre" label="Tu nombre" inputProps={{ maxLength: 30 }} size="medium" sx={{ flex: 1 }} />
+                <TextField 
+                  value={name} 
+                  onChange={e=>setName(e.target.value)} 
+                  placeholder="Tu nombre" 
+                  label="Tu nombre" 
+                  inputProps={{ maxLength: 30 }} 
+                  size="medium" 
+                  sx={{ flex: 1 }}
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter' && name && !joining) {
+                      join();
+                    }
+                  }}
+                />
                 <Button variant="contained" color="primary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3 }} disabled={!name || joining} onClick={join}>
                   {joining ? '⏳ Uniendo...' : '✅ Unirse'}
                 </Button>
@@ -205,24 +317,96 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                   <Chip key={p.id} label={p.name} color={p.id === playerId ? 'primary' : 'default'} sx={{ fontSize: 16, px: 1.5, mb: 0.5 }} />
                 ))}
               </Stack>
-              <Divider sx={{ my: 2 }} />
-              {state.isHost && isRoundActive && (
-                <Stack direction="row" spacing={2} justifyContent="center" sx={{ mb: 2 }}>
-                <Button variant="contained" color="primary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3 }} onClick={nextRound}>
-                  🔄 Siguiente palabra
-                </Button>
-                <Button variant="outlined" color="secondary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }} onClick={closeGame}>
-                  🏁 Finalizar juego
-                </Button>
-                </Stack>
+              
+              {/* Turn indicator - appears after word reading time */}
+              {isRoundActive && state.currentTurnPlayer && !wordRevealing && showTurnInfo && (
+                <Box sx={{ 
+                  mb: 2, 
+                  p: 2, 
+                  bgcolor: '#e8f5e8', 
+                  borderRadius: 2, 
+                  border: '2px solid #4caf50',
+                  animation: 'slideInFromTop 0.8s ease-out both',
+                  '@keyframes slideInFromTop': {
+                    '0%': {
+                      opacity: 0,
+                      transform: 'translateY(-30px)',
+                      maxHeight: '0px',
+                      padding: '0 16px',
+                      marginBottom: '0px'
+                    },
+                    '100%': {
+                      opacity: 1,
+                      transform: 'translateY(0)',
+                      maxHeight: '200px',
+                      padding: '16px',
+                      marginBottom: '16px'
+                    }
+                  }
+                }}>
+                  <Typography variant="h6" sx={{ color: '#2e7d32', mb: 1, textAlign: 'center' }}>
+                    🎯 Turno de: <strong>{state.currentTurnPlayer.name}</strong>
+                  </Typography>
+                  {state.isMyTurn && (
+                    <Typography variant="body2" sx={{ color: '#2e7d32', textAlign: 'center', fontWeight: 'bold' }}>
+                      ¡Es tu turno!
+                    </Typography>
+                  )}
+                </Box>
               )}
+              
+              {/* Next turn controls - appear after turn info */}
+              {isRoundActive && (state.isMyTurn || state.isHost) && !wordRevealing && showControls && (
+                <Box sx={{ 
+                  mb: 2, 
+                  display: 'flex', 
+                  justifyContent: 'center',
+                  gap: 2,
+                  animation: 'slideInFromTop 0.6s ease-out both',
+                  '@keyframes slideInFromTop': {
+                    '0%': {
+                      opacity: 0,
+                      transform: 'translateY(-20px)',
+                      maxHeight: '0px',
+                      marginBottom: '0px'
+                    },
+                    '100%': {
+                      opacity: 1,
+                      transform: 'translateY(0)',
+                      maxHeight: '100px',
+                      marginBottom: '16px'
+                    }
+                  }
+                }}>
+                  {state.isHost && (
+                    <Button 
+                      variant="contained" 
+                      color="primary" 
+                      size="large" 
+                      sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3 }}
+                      onClick={nextRound}
+                    >
+                      🔄 Siguiente palabra
+                    </Button>
+                  )}
+                  <Button 
+                    variant="contained" 
+                    color="success" 
+                    size="large" 
+                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3 }}
+                    onClick={nextTurn}
+                  >
+                    👉 Siguiente jugador
+                  </Button>
+                </Box>
+              )}
+              
+              <Divider sx={{ my: 2 }} />
+
               {state.isHost && !isRoundActive && playerId && (
                 <Stack direction="row" spacing={2} justifyContent="center" sx={{ mb: 2 }}>
                   <Button variant="contained" color="primary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3 }} onClick={startRound} disabled={state.game.players.length<3}>
                     🎯 Iniciar juego
-                  </Button>
-                  <Button variant="outlined" color="secondary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }} onClick={closeGame}>
-                    🏁 Finalizar juego
                   </Button>
                 </Stack>
               )}
@@ -304,13 +488,48 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                   </Box>
                 </Box>
               )}
+              
+              {/* Finalizar juego button below word for host */}
+              {isRoundActive && state?.isHost && showEndGameButton && (
+                <Box sx={{ 
+                  mt: 3,
+                  display: 'flex', 
+                  justifyContent: 'center'
+                }}>
+                  <Button 
+                    variant="outlined" 
+                    color="secondary" 
+                    size="large" 
+                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }}
+                    onClick={closeGame}
+                  >
+                    🏁 Finalizar juego
+                  </Button>
+                </Box>
+              )}
+              
+              {/* Finalizar juego button for inactive rounds */}
+              {!isRoundActive && state?.isHost && (
+                <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center' }}>
+                  <Button 
+                    variant="outlined" 
+                    color="secondary" 
+                    size="large" 
+                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }}
+                    onClick={closeGame}
+                  >
+                    🏁 Finalizar juego
+                  </Button>
+                </Box>
+              )}
+              
               {!isRoundActive && playerId && <Typography sx={{ color: '#616161', mt: 2 }}>Esperando que el host inicie la ronda...</Typography>}
             </Box>
           )}
           {state && state.isHost && (
-          <Typography sx={{ color: '#757575', mt: 3, fontSize: 15 }}>
-            👑 Como host: comparte este link con los demás para que se unan.
-          </Typography>
+            <Typography sx={{ color: '#757575', mt: 3, fontSize: 15 }}>
+              👑 Como host: comparte este link con los demás para que se unan.
+            </Typography>
           )}
         </Card>
         <Card sx={{ maxWidth: 430, width: '100%', p: { xs: 2, sm: 3 }, boxShadow: 2, textAlign: 'left', bgcolor: '#fff', mb: 2 }}>
@@ -322,10 +541,13 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               <ListItemText primary="El host inicia rondas. Cada ronda: palabra para todos menos el impostor." />
             </ListItem>
             <ListItem>
-              <ListItemText primary="Conversad presencialmente y tratad de descubrir al impostor." />
+              <ListItemText primary="Cada palabra rota el orden: quien empezaba pasa al final." />
             </ListItem>
             <ListItem>
-              <ListItemText primary="Cuando termine, el host finaliza y puede iniciar otra ronda." />
+              <ListItemText primary="El jugador activo (y el host) pueden pasar al siguiente turno." />
+            </ListItem>
+            <ListItem>
+              <ListItemText primary="Conversad y tratad de descubrir al impostor." />
             </ListItem>
           </List>
         </Card>
