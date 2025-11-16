@@ -1,4 +1,4 @@
-import { PlayerState } from './types';
+import { PlayerState, Round } from './types';
 import { getState } from './store';
 
 export type GameEventType =
@@ -9,12 +9,17 @@ export type GameEventType =
   | 'round-next'
   | 'game-close';
 
+type BroadcastState = Omit<
+  PlayerState,
+  'wordForPlayer' | 'player' | 'isHost' | 'round'
+> & { playerCount: number; round?: Omit<Round, 'word'> };
+
 export interface GameEvent {
   type: GameEventType;
   code: string;
   timestamp: number;
   // state es genérico (sin perspectiva de jugador). Se envía para reducir peticiones, pero cada cliente puede refrescar su vista personalizada.
-  state?: Omit<PlayerState, 'wordForPlayer' | 'player' | 'isHost'> & { playerCount: number };
+  state?: BroadcastState;
   playerId?: string;
   roundId?: string;
 }
@@ -58,9 +63,14 @@ export function emit(code: string, type: GameEventType, extra?: Partial<Omit<Gam
   let stateLite: GameEvent['state'] = undefined;
   const fullState = getState(code);
   if (fullState) {
+    let roundLite: BroadcastState['round'];
+    if (fullState.round) {
+      const { word: _word, ...rest } = fullState.round;
+      roundLite = rest;
+    }
     stateLite = {
       game: fullState.game,
-      round: fullState.round,
+      round: roundLite,
       playerCount: fullState.game.players.length,
     };
   }
