@@ -20,6 +20,18 @@ npm run build
 npm start
 ```
 
+## Tiempo real (SSE)
+Se reemplazó el polling periódico por Server-Sent Events.
+
+Ruta: `GET /api/game/{CODE}/events` mantiene una conexión abierta que emite:
+- `init`, `player-join`, `round-start`, `round-next`, `round-end`, `game-close` y heartbeats `ping`.
+
+El cliente escucha y sólo llama a `/api/game/{CODE}/state?pid=...` cuando un evento relevante ocurre, reduciendo tráfico.
+
+Extender: tras cualquier mutación en un handler importar `emit` de `lib/events` y llamar `emit(code, 'tipo')`. Luego añadir el nuevo `tipo` al array de tipos que disparan `refresh()` en `app/game/[code]/page.tsx`.
+
+Limitación: en despliegue serverless el in-memory + SSE puede fragmentarse entre instancias; para producción migrar a almacenamiento + canales realtime (Supabase, Pusher, Ably) o WebSockets gestionados.
+
 ## Deploy en Vercel
 1. Crear proyecto en Vercel apuntando a este repo.
 2. Framework: Next.js – sin configuración adicional.
