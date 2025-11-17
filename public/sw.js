@@ -24,11 +24,28 @@ self.addEventListener('install', (event) => {
 
 // Fetch event - serve from cache when offline, network when online
 self.addEventListener('fetch', (event) => {
+  // Skip caching for API requests and dynamic content
+  const shouldCache = (url) => {
+    // Don't cache API requests
+    if (url.includes('/api/')) return false;
+    // Don't cache requests with query parameters (like ?t=timestamp)
+    if (url.includes('?')) return false;
+    // Only cache static assets and main pages
+    return url.endsWith('/') || 
+           url.endsWith('.html') || 
+           url.endsWith('.js') || 
+           url.endsWith('.css') || 
+           url.endsWith('.png') || 
+           url.endsWith('.jpg') || 
+           url.endsWith('.ico') || 
+           url.endsWith('.json');
+  };
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        // If we got a response, clone it and store it in cache
-        if (response.status === 200) {
+        // Only cache static resources, not API calls or dynamic content
+        if (response.status === 200 && shouldCache(event.request.url)) {
           const responseToCache = response.clone();
           caches.open(CACHE_NAME)
             .then((cache) => {
