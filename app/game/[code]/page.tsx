@@ -136,18 +136,6 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, []);
 
-  // Detectar cambios de turno para activar vibración
-  useEffect(() => {
-    if (state && state.isMyTurn && !wasMyTurnPreviously) {
-      console.log('[Vibration] Turn change detected - it\'s now my turn');
-      vibrateOnTurn();
-      setWasMyTurnPreviously(true);
-    } else if (state && !state.isMyTurn && wasMyTurnPreviously) {
-      console.log('[Vibration] Turn change detected - no longer my turn');
-      setWasMyTurnPreviously(false);
-    }
-  }, [state, wasMyTurnPreviously, vibrateOnTurn]);
-
   const refresh = useCallback(async () => {
     if (!playerId) return;
     
