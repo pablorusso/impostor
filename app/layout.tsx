@@ -40,8 +40,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Impostor Game" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
         <link rel="apple-touch-icon" href="/icon-180x180.png" sizes="180x180" />
         <link rel="apple-touch-icon" href="/icon-192x192.png" sizes="192x192" />
+        <link rel="icon" type="image/png" sizes="192x192" href="/icon-192x192.png" />
+        <link rel="icon" type="image/png" sizes="512x512" href="/icon-512x512.png" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="application-name" content="Impostor Game" />
         <meta name="msapplication-TileColor" content="#e64a19" />
