@@ -2,6 +2,7 @@ import './globals.css';
 import type { ReactNode } from 'react';
 import HeaderNav from './components/HeaderNav';
 import { ConnectionProvider } from './contexts/ConnectionContext';
+import { Analytics } from '@vercel/analytics/react';
 
 export const metadata = {
   title: 'Impostor Game',
@@ -73,6 +74,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           </header>
           <main style={{maxWidth:840,margin:'0 auto',padding:'0 1rem'}}>{children}</main>
         </ConnectionProvider>
+        <Analytics />
       </body>
     </html>
   );
