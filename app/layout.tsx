@@ -48,6 +48,23 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <meta name="application-name" content="Impostor Game" />
         <meta name="msapplication-TileColor" content="#e64a19" />
         <meta name="msapplication-config" content="/browserconfig.xml" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', () => {
+                  navigator.serviceWorker.register('/sw.js')
+                    .then((registration) => {
+                      console.log('[SW] Registration successful:', registration.scope);
+                    })
+                    .catch((error) => {
+                      console.log('[SW] Registration failed:', error);
+                    });
+                });
+              }
+            `
+          }}
+        />
       </head>
       <body style={{fontFamily:'system-ui, -apple-system, Segoe UI, Roboto, sans-serif', backgroundColor:'#fbe9e7', margin:0, minHeight:'100vh'}}>
         <ConnectionProvider>
