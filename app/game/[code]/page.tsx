@@ -96,17 +96,34 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
   // Función para vibración en móviles
   const vibrateOnTurn = useCallback(() => {
+    console.log('[Vibration] Attempting to vibrate for turn notification');
+    
     // Verificar si el navegador soporta vibración
     if ('vibrate' in navigator) {
       try {
+        // Verificar si estamos en HTTPS o localhost (requerido para vibración en algunos navegadores)
+        const isSecure = window.location.protocol === 'https:' || window.location.hostname === 'localhost';
+        if (!isSecure) {
+          console.warn('[Vibration] May not work on non-HTTPS sites in some browsers');
+        }
+        
         // Patrón de vibración: vibrar 200ms, pausa 100ms, vibrar 200ms
-        navigator.vibrate([200, 100, 200]);
-        console.log('[Vibration] Turn notification sent');
+        const success = navigator.vibrate([200, 100, 200]);
+        console.log('[Vibration] Vibration result:', success);
+        
+        // Fallback: si el patrón no funciona, intentar vibración simple
+        if (!success) {
+          console.log('[Vibration] Pattern failed, trying simple vibration');
+          navigator.vibrate(300);
+        }
       } catch (error) {
         console.warn('[Vibration] Failed to vibrate:', error);
       }
     } else {
-      console.log('[Vibration] Not supported on this device');
+      console.log('[Vibration] API not supported on this device/browser');
+      if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
+        console.log('[Vibration] User agent:', (navigator as any).userAgent);
+      }
     }
   }, []);
 

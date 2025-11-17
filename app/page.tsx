@@ -38,7 +38,7 @@ export default function HomePage() {
   // Show loading while checking for active games
   if (checking) {
     return (
-      <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: 2, pt: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start' }}>
+      <Box sx={{ bgcolor: '#fbe9e7', p: 2, pt: 8, pb: 3, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
         <Card sx={{ maxWidth: 400, width: '100%', p: 3, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
           <Typography variant="h5" sx={{ fontWeight: 600, color: '#e64a19', mb: 2 }}>
             🔍 Verificando partidas activas...
@@ -52,7 +52,7 @@ export default function HomePage() {
   }
 
   return (
-    <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: 2, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+    <Box sx={{ bgcolor: '#fbe9e7', p: 2, pt: 8, pb: 3, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       {/* Continue active game option */}
       {activeGame && (
         <Suspense>
