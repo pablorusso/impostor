@@ -45,15 +45,6 @@ vercel --prod
 - Palabra aleatoria para cada ronda (excepto impostor)
 - In-memory store (NO persistente). Reinicios del servidor limpian partidas.
 
-## ⚙️ Configuración Redis
-
-**Estado Actual**: ✅ **Redis configurado y funcionando** con RedisLabs
-
-```env
-# Tu configuración actual (.env.development.local)
-REDIS_URL="redis://default:V4EHzoOHJ7qVu6823nGrZ8EqYOWB6sIN@redis-11973.c8.us-east-1-3.ec2.cloud.redislabs.com:11973"
-```
-
 **Funcionalidades**:
 - ✅ **Persistencia completa**: Los juegos sobreviven reiniciar serverless
 - ✅ **Auto-cleanup**: TTL de 6 horas, limpieza automática
