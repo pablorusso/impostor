@@ -41,6 +41,12 @@ self.addEventListener('fetch', (event) => {
            url.endsWith('.json');
   };
 
+  // Let API requests bypass service worker entirely when they fail
+  if (event.request.url.includes('/api/')) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {
@@ -61,7 +67,7 @@ self.addEventListener('fetch', (event) => {
             if (response) {
               return response;
             }
-            // If not in cache, return a basic offline page
+            // If not in cache, return a basic offline page for documents only
             if (event.request.destination === 'document') {
               return new Response(
                 '<h1>Sin conexión</h1><p>No hay conexión a internet. Intenta más tarde.</p>',
@@ -70,7 +76,8 @@ self.addEventListener('fetch', (event) => {
                 }
               );
             }
-            return new Response('Recurso no disponible sin conexión');
+            // For non-document requests, let the browser handle the network error
+            throw new Error('Network error and resource not cached');
           });
       })
   );
