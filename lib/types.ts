@@ -18,6 +18,8 @@ export interface Game {
   players: Player[];
   words: string[];
   shareCategories?: boolean; // Nueva opción: compartir categorías con el impostor
+  allowAllKick?: boolean; // Nueva opción: todos pueden expulsar
+  isPublic?: boolean; // Sala pública listable
   currentRound?: Round;
   turnOrder?: string[]; // Array of player IDs in turn order
   currentTurnIndex?: number; // Index into turnOrder
