@@ -1,5 +1,5 @@
 import { createClient } from 'redis';
-import { nanoid } from 'nanoid';
+import { nanoid, customAlphabet } from 'nanoid';
 import { Game, Player, PlayerState, Round } from './types';
 import { DEFAULT_WORDS, findWordCategory } from './words';
 
@@ -114,6 +114,7 @@ const getStore = () => {
 // Claves para Redis/Memory
 const GAME_KEY = (code: string) => `game:${code}`;
 const GAME_LIST_KEY = 'games:active';
+const PUBLIC_GAMES_KEY = 'games:public';
 const PLAYER_KEY = (code: string, playerId: string) => `player:${code}:${playerId}`;
 const PLAYER_GAME_MAP_KEY = (playerId: string) => `player_game:${playerId}`;
 
@@ -138,6 +139,28 @@ export async function saveGame(game: Game): Promise<void> {
     console.error('Error saving game:', error);
     throw new Error('Failed to save game');
   }
+}
+
+async function addPublicGame(code: string) {
+  const store = getStore();
+  const list = await store.get(PUBLIC_GAMES_KEY) as string[] | null;
+  const set = new Set(list || []);
+  set.add(code.toUpperCase());
+  await store.set(PUBLIC_GAMES_KEY, Array.from(set));
+}
+
+async function removePublicGame(code: string) {
+  const store = getStore();
+  const list = await store.get(PUBLIC_GAMES_KEY) as string[] | null;
+  if (!list) return;
+  const filtered = list.filter(c => c !== code.toUpperCase());
+  await store.set(PUBLIC_GAMES_KEY, filtered);
+}
+
+export async function getPublicGames(): Promise<string[]> {
+  const store = getStore();
+  const list = await store.get(PUBLIC_GAMES_KEY) as string[] | null;
+  return list || [];
 }
 
 // Mapear PlayerID a GameCode
@@ -217,30 +240,55 @@ async function transferHost(game: Game): Promise<void> {
 }
 
 // Crear un nuevo juego
-export async function createGame(hostPlayerId: string, hostName: string, words?: string[], shareCategories?: boolean): Promise<{ code: string; hostId: string; playerId: string }> {
+export async function createGame(hostPlayerId: string, hostName: string, words?: string[], shareCategories?: boolean, allowAllKick: boolean = true, isPublic: boolean = false): Promise<{ code: string; hostId: string; playerId: string }> {
   const store = getStore();
+  const generateGameCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 5);
   let code: string;
-  
+ 
   // Generar código único
   do {
-    code = nanoid(5).toUpperCase();
+    code = generateGameCode();
   } while (await store.exists(GAME_KEY(code)));
 
   const hostPlayer: Player = { id: hostPlayerId, name: hostName.trim() };
-  
+ 
   const game: Game = {
     code,
     hostId: hostPlayerId,
     players: [hostPlayer],
     words: (words && words.length > 0 ? words : DEFAULT_WORDS).slice().sort(() => Math.random() - 0.5),
     shareCategories: shareCategories || false,
+    allowAllKick,
+    isPublic,
   };
+  
+  // --- START: Add random players if env var is set ---
+  if (process.env.ADD_RANDOM_PLAYERS === 'true') {
+    const numberOfBots = 3;
+    for (let i = 1; i <= numberOfBots; i++) {
+      const botPlayer: Player = {
+        id: `bot-${nanoid()}`,
+        name: `Bot ${i}`
+      };
+      game.players.push(botPlayer);
+      
+      // We don't wait for this promise to resolve to speed up game creation
+      setPlayerGameMapping(botPlayer.id, code);
+    }
+
+    const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
+    console.log(`[${storeType}] Added ${numberOfBots} bot players to game ${code} due to ADD_RANDOM_PLAYERS flag.`);
+  }
+  // --- END: Add random players ---
 
   try {
     await store.set(GAME_KEY(code), game);
+    if (isPublic) {
+      await addPublicGame(code);
+    }
     // Mapear PlayerID -> GameCode
     await setPlayerGameMapping(hostPlayerId, code);
-    
+
     const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
     console.log(`[${storeType}] Game created: ${code} with ${game.words.length} words, host: ${hostName} (${hostPlayerId}), shareCategories: ${shareCategories}`);
     return { code, hostId: hostPlayerId, playerId: hostPlayerId };
@@ -332,6 +380,8 @@ export async function startRound(code: string): Promise<boolean> {
   const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
   
   game.currentRound = round;
+  // Si era pública y no ha empezado antes, remover de la lista pública
+  await removePublicGame(code.toUpperCase());
 
   // Guardar
   await store.set(GAME_KEY(code), game);
@@ -420,6 +470,13 @@ export async function closeGame(code: string): Promise<boolean> {
   const store = getStore();
   const game = await store.get(GAME_KEY(code.toUpperCase())) as Game | null;
   if (!game) return false;
+
+  await removePublicGame(code.toUpperCase());
+
+  // Limpiar mapeo PlayerID -> GameCode para todos los jugadores antes de borrar
+  for (const p of game.players) {
+    await removePlayerGameMapping(p.id);
+  }
 
   // Eliminar juego
   await store.del(GAME_KEY(code));

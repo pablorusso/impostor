@@ -9,8 +9,14 @@ export default function HeaderNav() {
   const [isInstalled, setIsInstalled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [showIOSInstructions, setShowIOSInstructions] = useState(false);
+  const [isMobileOrTablet, setIsMobileOrTablet] = useState(false);
 
   useEffect(() => {
+    const ua = navigator.userAgent || '';
+    const touchPoints = (navigator as any).maxTouchPoints || 0;
+    const mobileLike = /Mobi|Android|iPhone|iPad|iPod/i.test(ua) || touchPoints > 1;
+    setIsMobileOrTablet(mobileLike);
+
     // Detectar iOS
     const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -24,6 +30,7 @@ export default function HeaderNav() {
     // Escuchar el evento beforeinstallprompt (solo funciona en Android/Chrome)
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
+      if (!mobileLike) return;
       setDeferredPrompt(e);
       setIsInstallable(true);
     };
@@ -76,7 +83,7 @@ export default function HeaderNav() {
       </div>
       
       {/* Botón de instalación PWA para Android/Chrome */}
-      {isInstallable && !isInstalled && (
+      {isInstallable && isMobileOrTablet && !isInstalled && (
         <button
           onClick={handleInstallClick}
           style={{

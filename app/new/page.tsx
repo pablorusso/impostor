@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect } from 'react';
-import { Box, Button, Card, Typography, TextField, FormControlLabel, Checkbox, FormGroup, Divider } from '@mui/material';
+import Pusher from 'pusher-js';
+import { Box, Button, Card, Typography, TextField, FormControlLabel, Checkbox, FormGroup, Divider, Stack } from '@mui/material';
 import { WORD_CATEGORIES } from '../../lib/words';
 import { PlayerSession } from '../../lib/player-session';
 
@@ -18,68 +19,163 @@ const CATEGORY_INFO = {
 export default function NewGamePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeGame, setActiveGame] = useState<{ code: string; playerId: string } | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<Record<string, boolean>>(
     Object.keys(CATEGORY_INFO).reduce((acc, cat) => ({ ...acc, [cat]: true }), {})
   );
   const [shareCategories, setShareCategories] = useState(true);
-  const [playerSession, setPlayerSession] = useState<PlayerSession | null>(null);
-  const [defaultName, setDefaultName] = useState('');
+  const [allowAllKick, setAllowAllKick] = useState(true);
+  const [isPublic, setIsPublic] = useState(false);
   const [hostName, setHostName] = useState('');
 
   useEffect(() => {
-    const session = new PlayerSession();
-    setPlayerSession(session);
     const savedName = PlayerSession.getLastPlayerName() || '';
-    setDefaultName(savedName);
-    setHostName(savedName);
-    
-    // Check if player already has an active game
-    const checkActiveGame = async () => {
-      const playerId = PlayerSession.getPlayerId();
+    setHostName(savedName);    
+  }, []);
+  
+  useEffect(() => {
+    let cancelled = false;
+    const checkExistingGame = async () => {
       try {
+        const playerId = PlayerSession.getPlayerId();
+        if (!playerId) return;
         const res = await fetch(`/api/player/${playerId}/status`);
         if (res.ok) {
           const status = await res.json();
           if (status.inGame && status.currentGameCode) {
-            // Show info about current game but don't redirect automatically
-            setError(`Nota: Actualmente tienes una partida activa (${status.currentGameCode}). Al crear una nueva serás automáticamente removido de la anterior.`);
+            if (!cancelled) {
+              setActiveGame({
+                code: status.currentGameCode,
+                playerId
+              });
+            }
+          } else if (!cancelled) {
+            setActiveGame(null);
           }
+        } else if (!cancelled) {
+          setActiveGame(null);
         }
-      } catch (error) {
-        console.error('Error checking player status:', error);
+      } catch (err) {
+        console.error('Error checking active game:', err);
+        if (!cancelled) setActiveGame(null);
       }
     };
-    
-    checkActiveGame();
+    checkExistingGame();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkExistingGame();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
+
+  // Poll para detectar cambios en partida activa desde otras pestañas
+  useEffect(() => {
+    let cancelled = false;
+    const refreshStatus = async () => {
+      try {
+        const playerId = PlayerSession.getPlayerId();
+        if (!playerId) return;
+        const res = await fetch(`/api/player/${playerId}/status`);
+        if (!res.ok) return;
+        const status = await res.json();
+        if (status.inGame && status.currentGameCode && !cancelled) {
+          setActiveGame({ code: status.currentGameCode, playerId });
+        } else if (!cancelled) {
+          setActiveGame(null);
+        }
+      } catch (err) {
+        // ignore
+      }
+    };
+    const id = setInterval(refreshStatus, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeGame || !process.env.NEXT_PUBLIC_PUSHER_KEY) return;
+    const { code, playerId } = activeGame;
+    const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY, {
+      cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+      authEndpoint: `/api/pusher/auth`,
+      auth: {
+        headers: { 'x-player-id': playerId },
+      },
+    });
+
+    const channelName = `private-game-${code.toUpperCase()}`;
+    const channel = pusher.subscribe(channelName);
+
+    const handleSubscriptionError = (status: number) => {
+      if (status === 403) {
+        console.warn('[Pusher] Auth 403 on new banner, clearing activeGame');
+        setActiveGame(null);
+      }
+    };
+
+    const handlePlayerLeave = (data: any) => {
+      if (data?.playerId && data.playerId === playerId) {
+        setActiveGame(null);
+      }
+    };
+
+    const handleGameClose = () => {
+      setActiveGame(null);
+    };
+
+    channel.bind('player-leave', handlePlayerLeave);
+    channel.bind('game-close', handleGameClose);
+    channel.bind('pusher:subscription_error', handleSubscriptionError);
+
+    return () => {
+      channel.unbind('player-leave', handlePlayerLeave);
+      channel.unbind('game-close', handleGameClose);
+      channel.unbind('pusher:subscription_error', handleSubscriptionError);
+      pusher.unsubscribe(channelName);
+      pusher.disconnect();
+    };
+  }, [activeGame]);
 
   async function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     const fd = new FormData(e.currentTarget);
-    const name = String(fd.get('name')||'').trim();
+    const name = hostName.trim();
     const wordsRaw = String(fd.get('words')||'').trim();
+
+    if (!name) {
+      window.location.href = '/';
+      return;
+    }
     
-    let words: string[] = [];
-    
-    if (wordsRaw) {
-      // Si el host escribió palabras personalizadas, usarlas
-      words = wordsRaw.split(/[,\n]/).map(w => w.trim()).filter(w => w.length>0);
-    } else {
-      // Si no, usar las categorías seleccionadas
-      const selectedCats = Object.keys(selectedCategories).filter(cat => selectedCategories[cat]);
-      if (selectedCats.length === 0) {
-        setError('Debe seleccionar al menos una categoría o escribir palabras personalizadas');
-        setLoading(false);
-        return;
+    const customWords = wordsRaw
+      ? wordsRaw.split(/[,\n]/).map(w => w.trim()).filter(w => w.length > 0)
+      : [];
+
+    const selectedCats = Object.keys(selectedCategories).filter(cat => selectedCategories[cat]);
+    const categoryWords: string[] = [];
+    for (const cat of selectedCats) {
+      if (WORD_CATEGORIES[cat as keyof typeof WORD_CATEGORIES]) {
+        categoryWords.push(...WORD_CATEGORIES[cat as keyof typeof WORD_CATEGORIES]);
       }
-      
-      for (const cat of selectedCats) {
-        if (WORD_CATEGORIES[cat as keyof typeof WORD_CATEGORIES]) {
-          words.push(...WORD_CATEGORIES[cat as keyof typeof WORD_CATEGORIES]);
-        }
-      }
+    }
+
+    const words = [...categoryWords, ...customWords];
+
+    if (words.length === 0) {
+      setError('Debe seleccionar al menos una categoría o escribir palabras');
+      setLoading(false);
+      return;
     }
     
     try {
@@ -110,7 +206,9 @@ export default function NewGamePage() {
           hostPlayerId: playerId,
           hostName: name, 
           words, 
-          shareCategories 
+          shareCategories,
+          allowAllKick,
+          isPublic
         }) 
       });
       if (!res.ok) throw new Error('Error creando partida');
@@ -132,32 +230,120 @@ export default function NewGamePage() {
   };
 
   return (
-    <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: 2, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-      <Card sx={{ maxWidth: 450, width: '100%', p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
-        <Typography variant="h4" sx={{ fontWeight: 700, color: '#e64a19', mb: 2 }}>
-          🎲 Nueva partida
-        </Typography>
-        <Box component="form"
-          onSubmit={handleCreate}
-          sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
-          <TextField 
-            name="name" 
-            label="Tu nombre (host)" 
-            required 
-            value={hostName}
-            onChange={(e) => setHostName(e.target.value)}
-            inputProps={{ maxLength: 30 }} 
-            variant="outlined" 
-            size="medium"
-            sx={{ bgcolor: '#fff', borderRadius: 1 }}
-          />
-          
-          <Box sx={{ textAlign: 'left' }}>
-            <Typography variant="h6" sx={{ mb: 1, color: '#1976d2' }}>
-              📂 Categorías de palabras
+    <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: { xs: 1, sm: 2 }, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+      <Box component="form" onSubmit={handleCreate} sx={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
+        <Stack spacing={2} sx={{ width: '100%', maxWidth: 520, mx: 'auto' }}>
+          {activeGame && (
+            <Card sx={{ maxWidth: 520, p: 3, boxShadow: 4, textAlign: 'center', bgcolor: '#e8f5e8', border: '2px solid #4caf50' }}>
+              <Typography variant="h5" sx={{ fontWeight: 600, color: '#2e7d32', mb: 1 }}>
+                🎯 Partida en curso
+              </Typography>
+              <Typography variant="body1" sx={{ mb: 2, color: '#2e7d32' }}>
+                Tienes una partida activa: <strong>{activeGame.code}</strong>
+              </Typography>
+              <Button 
+                variant="contained" 
+                color="success"
+                size="large" 
+                sx={{ fontSize: 18, px: 4, py: 1.5, borderRadius: 3, fontWeight: 600, width: '100%' }}
+                onClick={() => {
+                  window.location.href = `/game/${activeGame.code}`;
+                }}
+              >
+                🚀 Continuar partida
+              </Button>
+            </Card>
+          )}
+          <Card
+            sx={{
+              p: { xs: 2, sm: 3 },
+              boxShadow: 4,
+              textAlign: 'center',
+              bgcolor: '#ffccbc',
+              color: 'inherit'
+            }}
+          >
+            <Typography variant="h3" sx={{ fontWeight: 700, color: '#e64a19', mb: 1 }}>
+              🎲 Crear
             </Typography>
-            <FormGroup sx={{ bgcolor: '#fff', p: 2, borderRadius: 1, border: '1px solid #ddd' }}>
-              <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 0.5 }}>
+            <Typography sx={{ fontSize: 16 }}>
+              Arma la sala, elige categorías o escribe tus propias palabras y comparte el código
+            </Typography>
+            <Button 
+              type="submit" 
+              variant="contained" 
+              color="primary" 
+              size="large" 
+              disabled={loading}
+              sx={{ 
+                fontSize: 18, 
+                px: 4, 
+                py: 1.5, 
+                bgcolor: '#1e88e5', 
+                borderRadius: 3,
+                fontWeight: 700,
+                mt: 2,
+                width: '100%'
+              }}
+            >
+              {loading ? '⏳ Creando...' : '🚀 Crear partida'}
+            </Button>
+          </Card>
+
+          <Card sx={{ p: { xs: 2, sm: 3 }, boxShadow: 4, bgcolor: '#ffccbc' }}>
+            <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 1 }}>
+              ⚙️ Opciones
+            </Typography>
+            <FormGroup>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={shareCategories}
+                    onChange={(e) => setShareCategories(e.target.checked)}
+                    sx={{ color: '#1976d2', '& .MuiSvgIcon-root': { fontSize: 26 } }}
+                  />
+                }
+                label="Compartir categoría con el impostor"
+                sx={{ fontSize: 14, margin: 0 }}
+              />
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={allowAllKick}
+                    onChange={(e) => setAllowAllKick(e.target.checked)}
+                    sx={{ color: '#1976d2', '& .MuiSvgIcon-root': { fontSize: 26 } }}
+                  />
+                }
+                label="Todos pueden expulsar"
+                sx={{ fontSize: 14, margin: 0 }}
+              />
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={isPublic}
+                    onChange={(e) => setIsPublic(e.target.checked)}
+                    sx={{ color: '#1976d2', '& .MuiSvgIcon-root': { fontSize: 26 } }}
+                  />
+                }
+                label="Sala pública"
+                sx={{ fontSize: 14, margin: 0 }}
+              />
+            </FormGroup>
+          </Card>
+
+          <Card sx={{ p: { xs: 2, sm: 3 }, boxShadow: 4, bgcolor: '#ffccbc' }}>
+            <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 1 }}>
+              🗂️ Categorías
+            </Typography>
+            <FormGroup sx={{ mt: 1 }}>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  columnGap: 1.5,
+                  rowGap: 0.4
+                }}
+              >
                 {Object.entries(CATEGORY_INFO).map(([key, info]) => (
                   <FormControlLabel
                     key={key}
@@ -165,90 +351,59 @@ export default function NewGamePage() {
                       <Checkbox
                         checked={selectedCategories[key]}
                         onChange={() => handleCategoryChange(key)}
-                        sx={{ color: '#1976d2', '& .MuiSvgIcon-root': { fontSize: 18 } }}
+                        sx={{ color: '#1976d2', '& .MuiSvgIcon-root': { fontSize: 26 } }}
                       />
                     }
-                    label={info.name}
+                    label={
+                      <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0, ml: -0.6 }}>
+                        <Typography component="span" sx={{ fontSize: 24, lineHeight: 1, mr: 0 }}>
+                          {info.emoji}
+                        </Typography>
+                        <Typography component="span" sx={{ fontSize: 14, lineHeight: 1.1 }}>
+                          {info.name.replace(/^[^\s]+\s*/, '')}
+                        </Typography>
+                      </Box>
+                    }
                     sx={{ 
-                      fontSize: 14, 
+                      fontSize: 16, 
                       margin: 0,
                       '& .MuiFormControlLabel-label': { 
-                        fontSize: 14,
+                        fontSize: 16,
                         marginLeft: 0.5
                       }
                     }}
                   />
                 ))}
               </Box>
-              <Typography sx={{ color: '#666', fontSize: 12, mt: 1 }}>
-                Selecciona las categorías que quieres incluir en el juego
-              </Typography>
             </FormGroup>
-          </Box>
-          
-          <Box sx={{ textAlign: 'left' }}>
-            <Typography variant="h6" sx={{ mb: 1, color: '#1976d2' }}>
-              🔍 Opciones del impostor
+          </Card>
+
+          <Card sx={{ p: { xs: 2, sm: 3 }, boxShadow: 4, bgcolor: '#ffccbc' }}>
+            <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 1 }}>
+              📝 Agregar palabras
             </Typography>
-            <FormGroup sx={{ bgcolor: '#fff', p: 2, borderRadius: 1, border: '1px solid #ddd' }}>
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={shareCategories}
-                    onChange={(e) => setShareCategories(e.target.checked)}
-                    sx={{ color: '#1976d2' }}
-                  />
-                }
-                label="Compartir categoría con el impostor"
-                sx={{ fontSize: 14, margin: 0 }}
-              />
-              <Typography sx={{ color: '#666', fontSize: 12, mt: 1 }}>
-                {shareCategories 
-                  ? "✅ El impostor verá la categoría de la palabra (ej: 'Animales')"
-                  : "❌ El impostor solo verá 'Eres el IMPOSTOR' sin más pistas"}
-              </Typography>
-            </FormGroup>
-          </Box>
-          
-          <Divider sx={{ my: 1 }}>O</Divider>
-          
-          <TextField 
-            name="words" 
-            label="Palabras personalizadas (opcional)" 
-            placeholder="Separadas por coma o líneas" 
-            multiline 
-            rows={4} 
-            variant="outlined"
-            sx={{ bgcolor: '#fff', borderRadius: 1 }}
-          />
-          <Button 
-            type="submit" 
-            variant="contained" 
-            color="primary" 
-            size="large" 
-            disabled={loading}
-            sx={{ 
-              fontSize: 18, 
-              px: 4, 
-              py: 1.5, 
-              bgcolor: '#1e88e5', 
-              borderRadius: 3,
-              fontWeight: 700,
-              mt: 1
-            }}
-          >
-            {loading ? '⏳ Creando y uniendo...' : '🚀 Crear partida'}
-          </Button>
+            <TextField 
+              name="words" 
+              label="Palabras" 
+              placeholder="Separadas por coma o líneas" 
+              multiline 
+              rows={4} 
+              variant="outlined"
+              fullWidth
+              sx={{ bgcolor: '#fff', borderRadius: 1, mb: 1 }}
+            />
+            <Typography sx={{ color: '#666', fontSize: 12 }}>
+              Ejemplos: &quot;gato, perro, pájaro&quot; o una por línea. Se mezclarán con las categorías seleccionadas.
+            </Typography>
+          </Card>
+
           {error && (
             <Typography color="error" sx={{ fontSize: 16, fontWeight: 500 }}>
               {error}
             </Typography>
           )}
-          <Typography sx={{ color: '#757575', fontSize: 14, mt: 1 }}>
-            💡 Puedes usar las categorías predefinidas o escribir tus propias palabras
-          </Typography>
-        </Box>
-      </Card>
+        </Stack>
+      </Box>
     </Box>
   );
 }

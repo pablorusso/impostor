@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from 'react';
+import Pusher from 'pusher-js';
 import { PlayerState } from '../../../lib/types';
 import { Box, Button, Card, Typography, TextField, Chip, Stack, Divider, List, ListItem, ListItemText } from '@mui/material';
 import { useConnection } from '../../contexts/ConnectionContext';
@@ -10,6 +11,11 @@ function isSafari(): boolean {
   if (typeof window === 'undefined') return false;
   const ua = window.navigator.userAgent;
   return /Safari/.test(ua) && !/Chrome/.test(ua) && !/Chromium/.test(ua);
+}
+
+function isIOSDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent);
 }
 
 // Leer playerId sólo en cliente tras el montaje para evitar discrepancias SSR/CSR y errores de hidratación.
@@ -88,18 +94,77 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [wordRevealing, setWordRevealing] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [lastRoundId, setLastRoundId] = useState<string | null>(null);
-  const [showTurnInfo, setShowTurnInfo] = useState(false);
   const [showControls, setShowControls] = useState(false);
   const [defaultName, setDefaultName] = useState('');
+  const [autoJoinAttempted, setAutoJoinAttempted] = useState(false);
+  const [autoJoining, setAutoJoining] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [wasMyTurnPreviously, setWasMyTurnPreviously] = useState(false);
+  const [hasVibratedForWord, setHasVibratedForWord] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submittingAction, setSubmittingAction] = useState<string | null>(null);
+  const [isKicking, setIsKicking] = useState(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const hasInitializedNameRef = useRef(false);
+
+  const playHapticFallback = useCallback(() => {
+    try {
+      const AudioContextClass = typeof window !== 'undefined'
+        ? (window.AudioContext || (window as any).webkitAudioContext)
+        : null;
+      if (!AudioContextClass) {
+        console.warn('[Vibration] AudioContext not available for fallback');
+        return false;
+      }
+
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContextClass();
+      }
+
+      const ctx = audioContextRef.current;
+      if (!ctx) return false;
+
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      // Breve pulso de baja frecuencia para simular la vibracion
+      const duration = 0.12;
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator.type = 'square';
+      oscillator.frequency.setValueAtTime(120, ctx.currentTime);
+
+      gainNode.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.01);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + duration);
+
+      console.log('[Vibration] Played audio fallback haptic');
+      return true;
+    } catch (error) {
+      console.warn('[Vibration] Fallback haptic failed:', error);
+      return false;
+    }
+  }, []);
 
   // Función para vibración en móviles
   const vibrateOnTurn = useCallback(() => {
     console.log('[Vibration] Attempting to vibrate for turn notification');
+
+    if (typeof navigator === 'undefined') {
+      console.warn('[Vibration] navigator is undefined');
+      return;
+    }
     
     // Verificar si el navegador soporta vibración
-    if ('vibrate' in navigator) {
+    if ('vibrate' in navigator && typeof navigator.vibrate === 'function') {
       try {
         // Verificar si estamos en HTTPS o localhost (requerido para vibración en algunos navegadores)
         const isSecure = window.location.protocol === 'https:' || window.location.hostname === 'localhost';
@@ -119,34 +184,73 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       } catch (error) {
         console.warn('[Vibration] Failed to vibrate:', error);
       }
+      return;
     } else {
       console.log('[Vibration] API not supported on this device/browser');
-      if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
-        console.log('[Vibration] User agent:', (navigator as any).userAgent);
+      if (isIOSDevice()) {
+        const fallbackResult = playHapticFallback();
+        console.log('[Vibration] Used iOS audio fallback:', fallbackResult);
       }
+      console.log('[Vibration] User agent:', (navigator as any).userAgent);
     }
+  }, [playHapticFallback]);
+
+  useEffect(() => {
+    const unlockAudio = () => {
+      try {
+        const AudioContextClass = typeof window !== 'undefined'
+          ? (window.AudioContext || (window as any).webkitAudioContext)
+          : null;
+        if (!AudioContextClass) return;
+
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioContextClass();
+        } else if (audioContextRef.current.state === 'suspended') {
+          audioContextRef.current.resume();
+        }
+      } catch (error) {
+        console.warn('[Vibration] Unable to unlock audio context:', error);
+      }
+    };
+
+    window.addEventListener('touchstart', unlockAudio, { once: true });
+    window.addEventListener('click', unlockAudio, { once: true });
+
+    return () => {
+      window.removeEventListener('touchstart', unlockAudio);
+      window.removeEventListener('click', unlockAudio);
+    };
   }, []);
 
   // Inicializar nombre por defecto una sola vez al montar
   useEffect(() => {
+    if (hasInitializedNameRef.current) return;
+    hasInitializedNameRef.current = true;
+
     const savedName = PlayerSession.getLastPlayerName();
     if (savedName) {
       setDefaultName(savedName);
       setName(savedName);
+    } else if (!playerId) {
+      // Sin nombre cargado, volver al home para completarlo
+      if (typeof window !== 'undefined') {
+        window.location.href = '/';
+      }
     }
-  }, []);
+  }, [playerId]);
 
-  const refresh = useCallback(async () => {
-    if (!playerId) return;
+  const refresh = useCallback(async (pIdToUse?: string) => {
+    const finalPlayerId = pIdToUse || playerId;
+    if (!finalPlayerId) return;
     
     try {
       // Timeout más conservador para Vercel con headers específicos
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       
-      console.log(`[Refresh] Fetching state for player: ${playerId}`);
+      console.log(`[Refresh] Fetching state for player: ${finalPlayerId}`);
       
-      const res = await fetch(`/api/game/${code}/state?pid=${playerId}`, {
+      const res = await fetch(`/api/game/${code}/state?pid=${finalPlayerId}`, {
         signal: controller.signal,
         cache: 'no-store', // Evitar cache en Vercel
         headers: {
@@ -179,12 +283,12 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         });
         
         // Detectar pérdida de sesión
-        if (detectSessionLoss(data, playerId)) {
+        if (detectSessionLoss(data, finalPlayerId)) {
           console.warn('[Refresh] Session loss detected');
           
           // Intentar recuperación automática para Safari
           if (isSafari()) {
-            const recoveredId = await safariRecovery(code, playerId);
+            const recoveredId = await safariRecovery(code, finalPlayerId);
             if (recoveredId) {
               console.log('[Safari] Session recovered successfully');
               setPlayerId(recoveredId);
@@ -200,7 +304,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           setState(null);
           setPlayerId(undefined);
           // Solo limpiar nombre si ya estaba conectado
-          if (playerId) {
+          if (finalPlayerId) {
             setName('');
           }
           if (typeof window !== 'undefined') {
@@ -218,7 +322,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           console.warn('[Refresh] Incomplete data received, structure check failed');
           // Intentar una vez más después de un delay
           setTimeout(() => {
-            if (playerId) {
+            if (finalPlayerId) {
               console.log('[Refresh] Retrying after invalid data...');
               refresh();
             }
@@ -228,7 +332,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         console.warn(`[Refresh] Server returned status ${res.status}, retrying...`);
         // Reintentar después de un delay
         setTimeout(() => {
-          if (playerId) refresh();
+          if (finalPlayerId) refresh();
         }, 3000);
       }
     } catch (error) {
@@ -239,7 +343,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       }
       // Reintentar después de un delay más largo
       setTimeout(() => {
-        if (playerId) {
+        if (finalPlayerId) {
           console.log('[Refresh] Retrying after error...');
           refresh();
         }
@@ -299,11 +403,12 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                 }
               }
               
-              // Si no se puede recuperar, limpiar todo
-              console.log('[Init] Cannot recover, clearing session');
+              // Si no se puede recuperar, limpiar sesión y dejar que auto-join actúe si hay nombre
+              console.log('[Init] Cannot recover, clearing session and retrying auto-join if name exists');
               sessionStorage.clear();
               setPlayerId(undefined);
-              setName('');
+              setAutoJoinAttempted(false);
+              setAutoJoining(false);
             }
           } else {
             console.warn('[Init] Invalid playerId, attempting recovery');
@@ -319,13 +424,11 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               }
             }
             
-            // Si no se puede recuperar, limpiar completamente
+            // Si no se puede recuperar, limpiar session y permitir auto-join
             sessionStorage.clear();
             setPlayerId(undefined);
-            // Solo limpiar nombre si ya estaba conectado
-            if (playerId) {
-              setName('');
-            }
+            setAutoJoinAttempted(false);
+            setAutoJoining(false);
           }
         } catch (error) {
           console.warn('[Init] Network error, attempting recovery');
@@ -341,13 +444,11 @@ export default function GameLobby({ params }: { params: { code: string } }) {
             }
           }
           
-          // En caso de error de red, limpiar completamente
+          // En caso de error de red, limpiar session y reintentar auto-join si hay nombre
           sessionStorage.clear();
           setPlayerId(undefined);
-          // Solo limpiar nombre si ya estaba conectado
-          if (playerId) {
-            setName('');
-          }
+          setAutoJoinAttempted(false);
+          setAutoJoining(false);
         }
       };
       
@@ -359,120 +460,73 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, [playerId, code]);
 
-  // Usar polling como mecanismo principal para máxima estabilidad
-  const pollingRef = useRef<NodeJS.Timeout | null>(null);
-  const lastStateRef = useRef<string | null>(null);
   const { setConnectionStatus, setRetryCount } = useConnection();
-  
+  const lastStateRef = useRef<string | null>(null);
+
+  // Reemplazo de Polling por Pusher
   useEffect(() => {
-    if (!playerId) return;
-    
-    console.log('[Connection] Starting robust polling mode for maximum stability');
+    if (!playerId || !process.env.NEXT_PUBLIC_PUSHER_KEY) return;
+
+    console.log('[Pusher] Initializing connection...');
     setConnectionStatus('connecting');
-    
-    // Polling agresivo con detección proactiva de cambios
-    const startPolling = () => {
-      let consecutiveErrors = 0;
-      const maxErrors = 5;
-      
-      const poll = async () => {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 8000); // Timeout más corto
-          
-          const res = await fetch(`/api/game/${code}/state?pid=${playerId}&t=${Date.now()}`, {
-            signal: controller.signal,
-            cache: 'no-store',
-            headers: {
-              'Cache-Control': 'no-cache, no-store, must-revalidate',
-              'Pragma': 'no-cache',
-              'Expires': '0'
-            }
-          });
-          
-          clearTimeout(timeoutId);
-          
-          if (res.status === 404) {
-            console.log('[Polling] Game not found, redirecting to home');
-            sessionStorage.clear();
-            window.location.href = '/';
-            return;
-          }
-          
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-          }
-          
-          const newState = await res.json();
-          
-          // Detectar si el jugador fue expulsado (juego existe pero jugador no está en la lista)
-          if (newState && newState.game && !newState.player) {
-            console.log('[Polling] Player no longer in game (expelled), redirecting to home');
-            sessionStorage.clear();
-            window.location.href = '/';
-            return;
-          }
-          
-          const stateHash = JSON.stringify(newState);
-          
-          // Detectar cambios en el estado
-          if (lastStateRef.current !== stateHash) {
-            console.log('[Polling] State change detected, updating');
-            setState(newState);
-            lastStateRef.current = stateHash;
-          }
-          
-          // Reset error counter on success
-          consecutiveErrors = 0;
-          setConnectionStatus('connected');
-          setRetryCount(0);
-          
-        } catch (error: any) {
-          consecutiveErrors++;
-          console.warn(`[Polling] Error (${consecutiveErrors}/${maxErrors}):`, error.message);
-          
-          if (consecutiveErrors >= maxErrors) {
-            setConnectionStatus('error');
-            setRetryCount(prev => {
-              const newCount = prev + 1;
-              
-              if (newCount >= 10) {
-                console.log('[Polling] Too many failed attempts, redirecting to home');
-                sessionStorage.clear();
-                window.location.href = '/';
-                return newCount;
-              }
-              
-              // Backoff exponencial pero limitado
-              const backoffTime = Math.min(1000 * Math.pow(1.5, newCount), 10000);
-              console.log(`[Polling] Backing off for ${backoffTime}ms`);
-              setTimeout(() => {
-                setConnectionStatus('connecting');
-                consecutiveErrors = 0;
-              }, backoffTime);
-              
-              return newCount;
-            });
-          }
-        }
-      };
-      
-      // Carga inicial
-      poll();
-      
-      // Polling cada 1.5 segundos para balance entre responsividad y carga
-      pollingRef.current = setInterval(poll, 1500);
-    };
-    
-    startPolling();
-    
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
+
+    const PusherClient = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY, {
+      cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+      authEndpoint: `/api/pusher/auth`,
+      auth: {
+        headers: {
+          'x-player-id': playerId,
+        },
+      },
+    });
+
+    const channelName = `private-game-${code.toUpperCase()}`;
+    const channel = PusherClient.subscribe(channelName);
+
+    channel.bind('pusher:subscription_succeeded', () => {
+      console.log(`[Pusher] Successfully subscribed to channel ${channelName}`);
+      setConnectionStatus('connected');
+      setRetryCount(0);
+      // Realizar una actualización inicial al conectar para asegurar sincronización
+      refresh();
+    });
+
+    channel.bind('pusher:subscription_error', (status: number) => {
+      console.error(`[Pusher] Subscription failed with status ${status}`);
+      setConnectionStatus('error');
+      // Si el error es de autorización, podría ser un problema de sesión
+      if (status === 403) {
+        console.error('[Pusher] Auth error, session might be invalid. Redirecting...');
+        sessionStorage.clear();
+        window.location.href = '/';
       }
+    });
+
+    channel.bind('game-update', (data: any) => {
+      console.log('[Pusher] Received "game-update" event:', data);
+      // En lugar de actualizar el estado directamente con el payload,
+      // refrescamos desde el servidor para obtener la vista de estado
+      // personalizada y segura para este jugador.
+      refresh();
+    });
+
+    // Manejo de la conexión general
+    PusherClient.connection.bind('connected', () => {
+      console.log('[Pusher] Connection established');
+      setConnectionStatus('connected');
+    });
+
+    PusherClient.connection.bind('error', (err: any) => {
+      console.error('[Pusher] Connection error:', err);
+      setConnectionStatus('error');
+      setRetryCount(prev => prev + 1);
+    });
+
+    return () => {
+      console.log('[Pusher] Disconnecting...');
+      PusherClient.disconnect();
     };
-  }, [code, playerId, setConnectionStatus, setRetryCount]);
+  }, [code, playerId, refresh, setConnectionStatus, setRetryCount]);
 
   // Detectar nueva ronda e iniciar animación
   useEffect(() => {
@@ -480,20 +534,62 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       setLastRoundId(state.round.id);
       setWordRevealing(true);
       setCountdown(3);
-      setShowTurnInfo(false);
       setShowControls(false);
-      
-      // Mostrar información de turno después de 4 segundos de la palabra
-      setTimeout(() => {
-        setShowTurnInfo(true);
-      }, 4000);
+      setHasVibratedForWord(false);
+      setIsSubmitting(false); // Reset submitting state when new round is confirmed
+      setSubmittingAction(null);
       
       // Mostrar controles después de 4.8 segundos
       setTimeout(() => {
         setShowControls(true);
-      }, 4800);
+      }, 1000);
     }
   }, [state?.round, lastRoundId]);
+
+  const join = useCallback(async () => {
+    setJoining(true); setError(null);
+    try {
+      const currentPlayerId = PlayerSession.getPlayerId();
+      
+      // Save player name for future sessions
+      PlayerSession.savePlayerName(name);
+      
+      const res = await fetch(`/api/game/${code}/join`, { 
+        method: 'POST', 
+        body: JSON.stringify({ 
+          playerId: currentPlayerId,
+          name 
+        }) 
+      });
+      if (!res.ok) throw new Error('No se pudo unir');
+      const data = await res.json();
+      
+      // Verificar que la respuesta tenga los datos esperados
+      if (data && data.playerId) {
+        sessionStorage.setItem('playerId', data.playerId);
+        sessionStorage.setItem('playerName', name);
+        setPlayerId(data.playerId);
+        setName('');
+        await refresh(data.playerId);
+      } else {
+        throw new Error('Respuesta inválida del servidor');
+      }
+    } catch (e:any) { 
+      setError(e.message);
+    } finally { 
+      setJoining(false); 
+      setAutoJoining(false);
+    }
+  }, [code, name, refresh]);
+
+  // Auto-unirse si hay nombre guardado y no existe playerId aún
+  useEffect(() => {
+    if (!playerId && name && !initializing && !joining && !autoJoinAttempted) {
+      setAutoJoinAttempted(true);
+      setAutoJoining(true);
+      join();
+    }
+  }, [playerId, name, initializing, joining, autoJoinAttempted, join]);
 
   // Detectar cambio de turno y vibrar en móviles
   useEffect(() => {
@@ -524,90 +620,169 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, [countdown, wordRevealing]);
 
-  async function join() {
-    setJoining(true); setError(null);
+  async function startRound() {
+    if (isSubmitting || isKicking) return;
+    setIsSubmitting(true);
+    setSubmittingAction('start');
     try {
-      const currentPlayerId = PlayerSession.getPlayerId();
-      
-      // Save player name for future sessions
-      PlayerSession.savePlayerName(name);
-      
-      const res = await fetch(`/api/game/${code}/join`, { 
-        method: 'POST', 
-        body: JSON.stringify({ 
-          playerId: currentPlayerId,
-          name 
-        }) 
-      });
-      if (!res.ok) throw new Error('No se pudo unir');
-      const data = await res.json();
-      
-      // Verificar que la respuesta tenga los datos esperados
-      if (data && data.playerId) {
-        sessionStorage.setItem('playerId', data.playerId);
-        sessionStorage.setItem('playerName', name);
-        setPlayerId(data.playerId);
-        setName('');
-        setTimeout(refresh, 300);
-      } else {
-        throw new Error('Respuesta inválida del servidor');
-      }
-    } catch (e:any) { 
-      setError(e.message);
-    } finally { 
-      setJoining(false); 
+        await fetch(`/api/game/${code}/start-round`, { method: 'POST' });
+        // On success, Pusher will trigger a refresh. The useEffect that detects 
+        // a new round will be responsible for setting isSubmitting to false.
+    } catch (error) {
+        console.error('Failed to start round:', error);
+        setIsSubmitting(false); // Reset on error
+        setSubmittingAction(null);
+        refresh(); // Fetch true state on error
     }
   }
-
-  async function startRound() {
-    await fetch(`/api/game/${code}/start-round`, { method: 'POST' });
-    setTimeout(refresh, 300);
-  }
   async function nextRound() {
-    await fetch(`/api/game/${code}/next-round`, { method: 'POST' });
-    setTimeout(refresh, 300);
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setSubmittingAction('next-round');
+    try {
+        await fetch(`/api/game/${code}/next-round`, { method: 'POST' });
+        // On success, Pusher will trigger a refresh.
+    } catch (error) {
+        console.error('Failed to go to next round:', error);
+        setIsSubmitting(false); // Reset on error
+        setSubmittingAction(null);
+        refresh();
+    }
   }
   async function nextTurn() {
-    await fetch(`/api/game/${code}/next-turn`, { method: 'POST' });
-    setTimeout(refresh, 300);
+    if (!state || !state.currentTurnPlayer || isSubmitting) return;
+
+    const originalState = state;
+    setIsSubmitting(true);
+    setSubmittingAction('next-turn');
+
+    // Optimistic update: Set the new turn immediately on the client
+    setState(currentState => {
+        if (!currentState || !currentState.currentTurnPlayer) {
+            // Should not happen, but as a safeguard.
+            return currentState;
+        }
+
+        const players = currentState.game.players;
+        const currentPlayerIndex = players.findIndex(p => p.id === currentState.currentTurnPlayer!.id);
+
+        if (currentPlayerIndex === -1) {
+            // Player not found, something is wrong, cancel optimistic update.
+            return currentState;
+        }
+
+        const nextPlayerIndex = (currentPlayerIndex + 1) % players.length;
+        const nextPlayer = players[nextPlayerIndex];
+        
+        const newState = {
+            ...currentState,
+            currentTurnPlayer: nextPlayer,
+            isMyTurn: nextPlayer.id === playerId,
+        };
+        console.log('[Optimistic] New turn for:', nextPlayer.name);
+        return newState;
+    });
+
+    try {
+        const res = await fetch(`/api/game/${code}/next-turn`, { method: 'POST' });
+        if (!res.ok) {
+            console.warn('[Optimistic] Next turn failed on server, reverting state.');
+            setState(originalState); // Revert to pre-optimistic state on failure
+        }
+        // On success, the Pusher event will arrive with the canonical state,
+        // overwriting the optimistic one.
+    } catch (error) {
+        console.error('Error during next turn:', error);
+        setState(originalState); // Revert on network error
+    } finally {
+        // The submitting state can be safely turned off.
+        setIsSubmitting(false);
+        setSubmittingAction(null);
+    }
   }
   async function closeGame() {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setSubmittingAction('close');
     try {
       const res = await fetch(`/api/game/${code}/close`, { method: 'POST' });
-      if (res.ok || res.status === 404) {
-        // Si el juego se cerró correctamente o ya no existe (404), limpiar y redirigir
-        sessionStorage.clear();
-        window.location.href = '/';
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'No se pudo cerrar la partida');
       }
-    } catch (error) {
-      // En caso de error de red, también limpiar y redirigir
+      // Solo limpiar sesión y redirigir cuando el servidor confirma
       sessionStorage.clear();
       window.location.href = '/';
+    } catch (error) {
+      console.error('Failed to close game:', error);
+      alert('No se pudo cerrar la partida. Intenta nuevamente.');
+      setIsSubmitting(false);
+      setSubmittingAction(null);
     }
   }
 
   async function leaveGame() {
+    setIsSubmitting(true); // Indicate that an action is in progress
+    setSubmittingAction('leave');
+
     try {
-      const res = await fetch(`/api/game/${code}/leave`, { 
-        method: 'POST', 
-        body: JSON.stringify({ playerId }) 
+      const res = await fetch(`/api/game/${code}/leave`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ playerId })
       });
-      if (res.ok || res.status === 404) {
-        // Si se abandonó correctamente o el juego ya no existe, limpiar y redirigir
+
+      if (res.ok) {
+        // Only clear session and redirect on success
         sessionStorage.clear();
         window.location.href = '/';
+      } else {
+        const errorData = await res.json();
+        console.error('Failed to leave game:', errorData.error);
+        alert(`Error al abandonar partida: ${errorData.error}`);
+        // Re-fetch state to reflect actual server state
+        refresh();
       }
     } catch (error) {
-      // En caso de error de red, también limpiar y redirigir
-      sessionStorage.clear();
-      window.location.href = '/';
+      console.error('Network error leaving game:', error);
+      alert('Error de red al abandonar partida');
+      // Re-fetch state to reflect actual server state
+      refresh();
+    } finally {
+      setIsSubmitting(false); // Reset submitting state
+      setSubmittingAction(null);
     }
   }
 
   async function kickPlayer(targetPlayerId: string, playerName: string) {
+    if (isKicking) return;
+    if (!playerId || !state) return;
+    if (!allowAllKick && !state.isHost) return;
+    if (targetPlayerId === playerId) return;
+
     if (!confirm(`¿Estás seguro de que quieres expulsar a ${playerName}?`)) {
       return;
     }
+
+    const originalState = state;
+    setIsKicking(true);
+
+    // Optimistic update
+    setState(currentState => {
+      if (!currentState) return null;
+      const newPlayers = currentState.game.players.filter(p => p.id !== targetPlayerId);
+      const newState = {
+        ...currentState,
+        game: {
+          ...currentState.game,
+          players: newPlayers
+        }
+      };
+      console.log('[Optimistic] Kicked player:', playerName);
+      return newState;
+    });
 
     try {
       const res = await fetch(`/api/game/${code}/kick`, {
@@ -615,23 +790,27 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
-          hostPlayerId: playerId, 
-          targetPlayerId 
+        body: JSON.stringify({
+          playerId,
+          targetPlayerId
         })
       });
 
-      if (res.ok) {
-        console.log(`Player ${playerName} kicked successfully`);
-        setTimeout(refresh, 300); // Refrescar el estado del juego
-      } else {
+      if (!res.ok) {
         const errorData = await res.json();
         console.error('Error kicking player:', errorData.error);
         alert(`Error al expulsar jugador: ${errorData.error}`);
+        // Revert on failure
+        setState(originalState);
       }
+      // On success, Pusher will trigger a full refresh anyway, which is fine.
     } catch (error) {
       console.error('Network error kicking player:', error);
       alert('Error de red al expulsar jugador');
+      // Revert on failure
+      setState(originalState);
+    } finally {
+      setIsKicking(false);
     }
   }
 
@@ -641,6 +820,20 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   // Mostrar categoría si está disponible
   const categoryVisible = state?.categoryForPlayer;
   const categoryInfo = categoryVisible ? CATEGORY_DISPLAY_INFO[categoryVisible as keyof typeof CATEGORY_DISPLAY_INFO] : null;
+  const showLobby = !!(playerId && state && !isRoundActive);
+  const showActiveRound = !!(playerId && state && isRoundActive);
+  const showJoinForm = !playerId && !joining && !autoJoining;
+  const showRecoveringState = !!(playerId && !state && !initializing);
+  const allowAllKick = state?.game?.allowAllKick !== false;
+  useEffect(() => {
+    const wordIsVisible = isRoundActive && !wordRevealing && countdown === 0 && !!wordVisible;
+    if (wordIsVisible && !hasVibratedForWord) {
+      console.log('[Vibration] Word visible, triggering feedback');
+      vibrateOnTurn();
+      setHasVibratedForWord(true);
+    }
+  }, [isRoundActive, wordVisible, wordRevealing, countdown, hasVibratedForWord, vibrateOnTurn]);
+
 
   // Show loading while initializing to avoid premature join form display
   if (initializing) {
@@ -661,21 +854,27 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: { xs: 1, sm: 2 }, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 1, position: 'relative' }}>
-          <Typography variant="h4" sx={{ fontWeight: 700, color: '#e64a19' }}>
-            🎪 Partida {code}
-          </Typography>
-          {state?.isHost && (
+        <Typography variant="h4" sx={{ fontWeight: 700, color: '#e64a19' }}>
+          {code}
+        </Typography>
+        <Typography sx={{ color: '#9e9e9e', mt: 0.5, fontSize: 14, textAlign: 'center' }}>
+          Comparte este código con los demás para que se unan.
+        </Typography>
+      </Card>
+
+      {!showRecoveringState && (
+        <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
+          <Stack direction="row" justifyContent="center" flexWrap="wrap" sx={{ columnGap: 1.5, rowGap: 1.25 }}>
             <Button
-              size="small"
+              variant="outlined"
+              size="medium"
               onClick={() => {
                 const url = window.location.origin + window.location.pathname;
                 navigator.clipboard.writeText(url).then(() => {
-                  // Feedback visual temporal
-                  const btn = document.querySelector('[data-copy-btn="true"]') as HTMLElement;
+                  const btn = document.querySelector('[data-copy-link-btn="true"]') as HTMLElement;
                   if (btn) {
                     const originalText = btn.textContent;
-                    btn.textContent = '✅';
+                    btn.textContent = '✅ Copiado!';
                     setTimeout(() => {
                       btn.textContent = originalText;
                     }, 1500);
@@ -684,63 +883,105 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                   alert('No se pudo copiar el link. URL: ' + url);
                 });
               }}
-              sx={{ 
-                minWidth: 'auto', 
-                p: 0.5, 
-                fontSize: 16,
+              sx={{
+                fontSize: 14,
+                px: 2.5,
+                py: 1.1,
+                borderRadius: 2,
+                bgcolor: '#fff',
+                borderColor: '#1976d2',
                 color: '#1976d2',
-                '&:hover': { bgcolor: '#e3f2fd' }
+                '&:hover': { bgcolor: '#e3f2fd', borderColor: '#1565c0' }
               }}
-              data-copy-btn="true"
+              data-copy-link-btn="true"
+              disabled={isSubmitting}
             >
-              📋
+              📋 Copiar
             </Button>
-          )}
-        </Box>
-          {!playerId && (
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="h6" sx={{ color: '#1976d2', mb: 1 }}>
-                👋 Unirte
-              </Typography>
-              <Stack direction="row" spacing={2} justifyContent="center" alignItems="center" sx={{ mb: 2 }}>
-                <TextField 
-                  value={name} 
-                  onChange={e=>setName(e.target.value)} 
-                  placeholder="Tu nombre" 
-                  label="Tu nombre" 
-                  inputProps={{ maxLength: 30 }} 
-                  size="medium" 
-                  sx={{ flex: 1 }}
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter' && name && !joining) {
-                      join();
-                    }
-                  }}
-                />
-                <Button variant="contained" color="primary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3 }} disabled={!name || joining} onClick={join}>
-                  {joining ? '⏳ Uniendo...' : '✅ Unirse'}
-                </Button>
-              </Stack>
-              {error && <Typography color="error" sx={{ fontSize: 16 }}>{error}</Typography>}
-            </Box>
-          )}
-          {playerId && state && (
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="body1" sx={{ mb: 1 }}>
-                Jugadores ({state.game.players.length}):
-              </Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent="center" sx={{ mb: 2 }}>
+
+            {state?.isHost && (
+              <Button
+                variant="outlined"
+                color="error"
+                size="medium"
+                sx={{ fontSize: 14, px: 2.5, py: 1.1, borderRadius: 2, bgcolor: '#ffeaea' }}
+                onClick={closeGame}
+                disabled={isSubmitting}
+              >
+                {submittingAction === 'close' ? '⏳ Finalizando...' : '🏁 Finalizar'}
+              </Button>
+            )}
+          </Stack>
+        </Card>
+      )}
+
+      {showJoinForm && (
+        <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
+          <Box sx={{ mt: 2 }}>
+            <Typography variant="h6" sx={{ color: '#1976d2', mb: 1 }}>
+              👋 Unirte
+            </Typography>
+            <Stack direction="row" spacing={2} justifyContent="center" alignItems="center" sx={{ mb: 2 }}>
+              <TextField 
+                value={name} 
+                onChange={e=>setName(e.target.value)} 
+                placeholder="Tu nombre" 
+                label="Tu nombre" 
+                inputProps={{ maxLength: 30 }} 
+                size="medium" 
+                sx={{ flex: 1 }}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && name && !joining) {
+                    join();
+                  }
+                }}
+              />
+              <Button variant="contained" color="primary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3 }} disabled={!name || joining} onClick={join}>
+                {joining ? '⏳ Uniendo...' : '✅ Unirse'}
+              </Button>
+            </Stack>
+            {error && <Typography color="error" sx={{ fontSize: 16 }}>{error}</Typography>}
+          </Box>
+        </Card>
+      )}
+
+      {showRecoveringState && (
+        <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
+          <Typography variant="h6" sx={{ color: '#1976d2' }}>
+            🔄 Recuperando tu partida...
+          </Typography>
+        </Card>
+      )}
+
+      {showLobby && (
+        <Stack spacing={2} alignItems="center" sx={{ width: '100%', maxWidth: 430, mb: 2 }}>
+
+          <Card sx={{ maxWidth: 430, width: '100%', p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
+            <Stack spacing={2}>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+                  gap: 1,
+                  width: '100%',
+                  alignItems: 'center'
+                }}
+              >
                 {state.game.players.map(p => (
-                  <Box key={p.id} sx={{ position: 'relative', display: 'inline-flex' }}>
-                    <Chip 
-                      label={p.name} 
-                      color={p.id === playerId ? 'primary' : 'default'} 
-                      sx={{ fontSize: 16, px: 1.5, mb: 0.5 }} 
+                  <Box key={p.id} sx={{ position: 'relative', display: 'flex', justifyContent: 'center', width: '100%' }}>
+                    <Chip
+                      label={p.name}
+                      color={p.id === playerId ? 'primary' : 'default'}
+                      sx={{ fontSize: 14, px: 1.25, width: '100%', justifyContent: 'center' }}
                     />
-                    {state.isHost && p.id !== playerId && (
+                    {p.id === playerId ? (
                       <Button
                         size="small"
-                        onClick={() => kickPlayer(p.id, p.name)}
+                        onClick={() => {
+                          if (!confirm('¿Está seguro que deseas abandonar la partida?')) return;
+                          leaveGame();
+                        }}
+                        disabled={isSubmitting}
                         sx={{
                           position: 'absolute',
                           top: -8,
@@ -754,6 +995,38 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                           fontSize: 16,
                           fontWeight: 'bold',
                           p: 0,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          '&:hover': {
+                            bgcolor: '#d32f2f'
+                          },
+                          zIndex: 1
+                        }}
+                      >
+                        ×
+                      </Button>
+                    ) : ((allowAllKick && p.id !== playerId) || (!allowAllKick && state.isHost && p.id !== playerId)) && (
+                      <Button
+                        size="small"
+                        onClick={() => kickPlayer(p.id, p.name)}
+                        disabled={isSubmitting || isKicking}
+                        sx={{
+                          position: 'absolute',
+                          top: -8,
+                          right: -4,
+                          minWidth: 20,
+                          width: 20,
+                          height: 20,
+                          borderRadius: '50%',
+                          bgcolor: '#f44336',
+                          color: 'white',
+                          fontSize: 16,
+                          fontWeight: 'bold',
+                          p: 0,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
                           '&:hover': {
                             bgcolor: '#d32f2f'
                           },
@@ -765,276 +1038,295 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     )}
                   </Box>
                 ))}
-              </Stack>
-              
-              {/* Turn indicator - appears after word reading time */}
-              {isRoundActive && state.currentTurnPlayer && !wordRevealing && showTurnInfo && (
-                <Box sx={{ 
-                  mb: 2, 
-                  p: 2, 
-                  bgcolor: '#e8f5e8', 
-                  borderRadius: 2, 
-                  border: '2px solid #4caf50',
-                  animation: 'slideInFromTop 0.8s ease-out both',
-                  '@keyframes slideInFromTop': {
-                    '0%': {
-                      opacity: 0,
-                      transform: 'translateY(-30px)',
-                      maxHeight: '0px',
-                      padding: '0 16px',
-                      marginBottom: '0px'
-                    },
-                    '100%': {
-                      opacity: 1,
-                      transform: 'translateY(0)',
-                      maxHeight: '200px',
-                      padding: '16px',
-                      marginBottom: '16px'
-                    }
-                  }
-                }}>
-                  <Typography variant="h6" sx={{ color: '#2e7d32', mb: 1, textAlign: 'center' }}>
-                    🎯 Turno de: <strong>{state.currentTurnPlayer.name}</strong>
-                  </Typography>
-                  {state.isMyTurn && (
-                    <Typography variant="body2" sx={{ color: '#2e7d32', textAlign: 'center', fontWeight: 'bold' }}>
-                      ¡Es tu turno!
+              </Box>
+
+              <Divider />
+
+              {/* Start Round Button / Waiting Message */}
+              {state.isHost ? (
+                <Stack>
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      size="large"
+                      sx={{ fontSize: 20, px: 4, py: 1.5, borderRadius: 3 }}
+                      onClick={startRound}
+                      disabled={state.game.players.length < 3 || isSubmitting || isKicking}
+                    >
+                      {submittingAction === 'start' ? '⏳ Iniciando...' : '🎯 Iniciar Partida'}
+                    </Button>
+                  {state.game.players.length < 3 && (
+                    <Typography variant="caption" sx={{ color: '#e64a19', mt: 1 }}>
+                      Se necesitan al menos 3 jugadores para iniciar la partida.
                     </Typography>
                   )}
-                </Box>
-              )}
-              
-              {/* Next turn controls - appear after turn info */}
-              {isRoundActive && (state.isMyTurn || state.isHost) && !wordRevealing && showControls && (
-                <Box sx={{ 
-                  mb: 2, 
-                  display: 'flex', 
-                  justifyContent: 'center',
-                  gap: 2,
-                  animation: 'slideInFromTop 0.6s ease-out both',
-                  '@keyframes slideInFromTop': {
-                    '0%': {
-                      opacity: 0,
-                      transform: 'translateY(-20px)',
-                      maxHeight: '0px',
-                      marginBottom: '0px'
-                    },
-                    '100%': {
-                      opacity: 1,
-                      transform: 'translateY(0)',
-                      maxHeight: '100px',
-                      marginBottom: '16px'
-                    }
-                  }
-                }}>
-                  {state.isHost && (
-                    <Button 
-                      variant="contained" 
-                      color="primary" 
-                      size="large" 
-                      sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3 }}
-                      onClick={nextRound}
-                    >
-                      🔄 Siguiente palabra
-                    </Button>
-                  )}
-                  <Button 
-                    variant="contained" 
-                    color="success" 
-                    size="large" 
-                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3 }}
-                    onClick={nextTurn}
-                  >
-                    👉 Siguiente jugador
-                  </Button>
-                </Box>
-              )}
-              
-              <Divider sx={{ my: 2 }} />
-
-              {state.isHost && !isRoundActive && playerId && (
-                <Stack direction="row" spacing={2} justifyContent="center" sx={{ mb: 2 }}>
-                  <Button variant="contained" color="primary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3 }} onClick={startRound} disabled={state.game.players.length<3}>
-                    🎯 Iniciar
-                  </Button>
                 </Stack>
+              ) : (
+                <Typography sx={{ color: '#616161' }}>Esperando que el host inicie la ronda...</Typography>
               )}
-              {isRoundActive && (
-                <Box sx={{ mt: 3 }}>
-                  <Typography variant="subtitle1" sx={{ mb: 1, color: '#1976d2' }}>🎯 Tu palabra:</Typography>
-                  <Box sx={{ 
-                    position: 'relative',
-                    p: 2, 
-                    border: '2px dashed', 
-                    borderColor: '#1976d2', 
-                    borderRadius: 2, 
-                    bgcolor: '#e3f2fd', 
-                    fontSize: 22, 
-                    fontWeight: 'bold', 
-                    letterSpacing: 1, 
-                    textTransform: 'uppercase',
-                    minHeight: 60,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    overflow: 'hidden'
-                  }}>
-                    {/* Categoría en esquina inferior derecha - solo visible cuando no hay countdown */}
-                    {categoryInfo && !wordRevealing && (
-                      <Box sx={{ 
+            </Stack>
+          </Card>
+        </Stack>
+      )}
+
+      {showActiveRound && (
+        <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'left', bgcolor: '#ffccbc' }}>
+          <Box>
+            <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 2 }}>
+              🧑‍🤝‍🧑 Jugadores
+            </Typography>
+
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, 1fr)',
+                columnGap: 1.5,
+                gap: 1,
+                width: '100%',
+                mb: 2,
+                alignItems: 'center'
+              }}
+            >
+              {state.game.players.map(p => (
+                <Box key={p.id} sx={{ position: 'relative', display: 'flex', justifyContent: 'center', width: '100%' }}>
+                  <Chip
+                    label={p.name}
+                    color={p.id === playerId ? 'primary' : 'default'}
+                    sx={{ fontSize: 14, px: 1.25, width: '100%', justifyContent: 'center' }}
+                  />
+                  {p.id === playerId ? (
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        if (!confirm('¿Está seguro que deseas abandonar la partida?')) return;
+                        leaveGame();
+                      }}
+                      disabled={isSubmitting}
+                      sx={{
                         position: 'absolute',
-                        bottom: 4,
-                        right: 4,
-                        fontSize: 10,
-                        fontWeight: 500,
-                        color: '#e65100',
-                        bgcolor: '#fff3e0',
-                        px: 1,
-                        py: 0.25,
-                        borderRadius: 1,
-                        border: '1px solid #ffb74d',
-                        textTransform: 'none',
-                        letterSpacing: 0
-                      }}>
-                        {categoryInfo.name}
-                      </Box>
-                    )}
-                    {wordRevealing ? (
-                      // Contador y animación de revelado
-                      <Box sx={{ 
-                        position: 'relative',
-                        width: '100%',
-                        height: '100%',
+                        top: -8,
+                        right: -8,
+                        minWidth: 20,
+                        width: 20,
+                        height: 20,
+                        borderRadius: '50%',
+                        bgcolor: '#f44336',
+                        color: 'white',
+                        fontSize: 16,
+                        fontWeight: 'bold',
+                        p: 0,
                         display: 'flex',
                         alignItems: 'center',
-                        justifyContent: 'center'
-                      }}>
-                        {countdown > 0 ? (
-                          <Typography sx={{ 
-                            fontSize: 28, 
-                            fontWeight: 'bold', 
-                            color: '#1976d2',
-                            animation: 'pulse 1s infinite'
-                          }}>
-                            {countdown}
-                          </Typography>
-                        ) : (
-                          <Box sx={{
-                            position: 'relative',
-                            width: '100%',
-                            animation: 'slideDown 0.5s ease-out',
-                            '@keyframes slideDown': {
-                              '0%': {
-                                transform: 'translateY(-100%)',
-                                opacity: 0
-                              },
-                              '100%': {
-                                transform: 'translateY(0)',
-                                opacity: 1
-                              }
-                            },
-                            '@keyframes pulse': {
-                              '0%, 100%': {
-                                transform: 'scale(1)',
-                                opacity: 1
-                              },
-                              '50%': {
-                                transform: 'scale(1.1)',
-                                opacity: 0.8
-                              }
-                            }
-                          }}>
-                            {wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...'}
-                          </Box>
-                        )}
-                      </Box>
-                    ) : (
-                      // Palabra visible normalmente
-                      <Box sx={{ width: '100%', textAlign: 'center' }}>
-                        {wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...'}
-                      </Box>
-                    )}
-                  </Box>
+                        justifyContent: 'center',
+                        '&:hover': {
+                          bgcolor: '#d32f2f'
+                        },
+                        zIndex: 1
+                      }}
+                    >
+                      ×
+                    </Button>
+                  ) : ((allowAllKick && p.id !== playerId) || (!allowAllKick && state.isHost && p.id !== playerId)) && (
+                    <Button
+                      size="small"
+                      onClick={() => kickPlayer(p.id, p.name)}
+                      disabled={isSubmitting || isKicking}
+                      sx={{
+                        position: 'absolute',
+                        top: -8,
+                        right: -8,
+                        minWidth: 20,
+                        width: 20,
+                        height: 20,
+                        borderRadius: '50%',
+                        bgcolor: '#f44336',
+                        color: 'white',
+                        fontSize: 16,
+                        fontWeight: 'bold',
+                        p: 0,
+                        '&:hover': {
+                          bgcolor: '#d32f2f'
+                        },
+                        zIndex: 1
+                      }}
+                    >
+                      ×
+                    </Button>
+                  )}
                 </Box>
-              )}
-              
-              {/* Host controls: Abandonar partida y Finalizar juego */}
-              {isRoundActive && state?.isHost && (
-                <Box sx={{ 
-                  mt: 3,
-                  display: 'flex', 
-                  justifyContent: 'center',
-                  gap: 2
-                }}>
-                  <Button 
-                    variant="outlined" 
-                    color="error" 
-                    size="large" 
-                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
-                    onClick={leaveGame}
-                  >
-                    🚪 Abandonar
-                  </Button>
-                  <Button 
-                    variant="outlined" 
-                    color="secondary" 
-                    size="large" 
-                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }}
-                    onClick={closeGame}
-                  >
-                    🏁 Finalizar
-                  </Button>
-                </Box>
-              )}
-              
-              {/* Host controls for inactive rounds: Abandonar partida y Finalizar juego */}
-              {!isRoundActive && state?.isHost && (
-                <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center', gap: 2 }}>
-                  <Button 
-                    variant="outlined" 
-                    color="error" 
-                    size="large" 
-                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
-                    onClick={leaveGame}
-                  >
-                    🚪 Abandonar
-                  </Button>
-                  <Button 
-                    variant="outlined" 
-                    color="secondary" 
-                    size="large" 
-                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }}
-                    onClick={closeGame}
-                  >
-                    🏁 Finalizar
-                  </Button>
-                </Box>
-              )}
-              
-              {/* Abandonar partida button for non-host players */}
-              {!state?.isHost && playerId && (
-                <Box sx={{ mt: isRoundActive ? 3 : 2, display: 'flex', justifyContent: 'center' }}>
-                  <Button 
-                    variant="outlined" 
-                    color="error" 
-                    size="large" 
-                    sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
-                    onClick={leaveGame}
-                  >
-                    🚪 Abandonar
-                  </Button>
-                </Box>
-              )}
-              
-              {!isRoundActive && playerId && <Typography sx={{ color: '#616161', mt: 2 }}>Esperando que el host inicie la ronda...</Typography>}
+              ))}
             </Box>
-          )}
-          {state && state.isHost && (
-            <Typography sx={{ color: '#757575', mt: 3, fontSize: 15 }}>
-              👑 Como host: comparte este link con los demás para que se unan.
-            </Typography>
-          )}
+
+            <Divider sx={{ my: 2 }} />
+
+            {/* Turn indicator - appears after word reading time */}
+            {isRoundActive && state.currentTurnPlayer && (
+              <Box sx={{
+                mb: 2,
+                p: 2,
+                bgcolor: '#e8f5e8',
+                borderRadius: 2,
+                border: '2px solid #4caf50',
+                animation: 'slideInFromTop 0.8s ease-out both',
+                '@keyframes slideInFromTop': {
+                  '0%': {
+                    opacity: 0,
+                    transform: 'translateY(-30px)',
+                    maxHeight: '0px',
+                    padding: '0 16px',
+                    marginBottom: '0px'
+                  },
+                  '100%': {
+                    opacity: 1,
+                    transform: 'translateY(0)',
+                    maxHeight: '200px',
+                    padding: '16px',
+                    marginBottom: '16px'
+                  }
+                }
+              }}>
+                <Typography variant="h6" sx={{ color: '#2e7d32', mb: 1, textAlign: 'center' }}>
+                  {state.isMyTurn ? (<span>🫵 <strong>¡Es tu turno!</strong></span>) : (<span>👉 Turno de: <strong>{state.currentTurnPlayer.name}</strong></span>)}
+                </Typography>
+              </Box>
+            )}
+          </Box>
+          <Button
+            variant="contained"
+            color="success"
+            size="large"
+            sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%', mt: 1 }}
+            onClick={nextTurn}
+            disabled={isSubmitting}
+          >
+            {isSubmitting ? '⏳...' : 'Siguiente jugador'}
+          </Button>          
         </Card>
+      )}
+
+      {showActiveRound && (
+        <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, bgcolor: '#ffccbc' }}>
+          <Box>
+            {isRoundActive && (
+              <Box>
+                <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 1 }}>
+                  🎯 Palabra
+                </Typography>
+                
+                <Box sx={{
+                  position: 'relative',
+                  p: 2,
+                  border: '2px dashed',
+                  borderColor: '#1976d2',
+                  borderRadius: 2,
+                  bgcolor: '#e3f2fd',
+                  fontSize: 22,
+                  fontWeight: 'bold',
+                  letterSpacing: 1,
+                  textTransform: 'uppercase',
+                  minHeight: 60,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  overflow: 'hidden'
+                }}>
+                  {/* Categoría en esquina inferior derecha - solo visible cuando no hay countdown */}
+                  {categoryInfo && !wordRevealing && (
+                    <Box sx={{
+                      position: 'absolute',
+                      bottom: 4,
+                      right: 4,
+                      fontSize: 10,
+                      fontWeight: 500,
+                      color: '#e65100',
+                      bgcolor: '#fff3e0',
+                      px: 1,
+                      py: 0.25,
+                      borderRadius: 1,
+                      border: '1px solid #ffb74d',
+                      textTransform: 'none',
+                      letterSpacing: 0
+                    }}>
+                      {categoryInfo.name}
+                    </Box>
+                  )}
+                  {wordRevealing ? (
+                    // Contador y animación de revelado
+                    <Box sx={{
+                      position: 'relative',
+                      width: '100%',
+                      height: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      {countdown > 0 ? (
+                        <Typography sx={{
+                          fontSize: 28,
+                          fontWeight: 'bold',
+                          color: '#1976d2',
+                          animation: 'pulse 1s infinite'
+                        }}>
+                          {countdown}
+                        </Typography>
+                      ) : (
+                        <Box sx={{
+                          position: 'relative',
+                          width: '100%',
+                          textAlign: 'center',
+                          animation: 'slideDown 0.5s ease-out',
+                          '@keyframes slideDown': {
+                            '0%': {
+                              transform: 'translateY(-100%)',
+                              opacity: 0
+                            },
+                            '100%': {
+                              transform: 'translateY(0)',
+                              opacity: 1
+                            }
+                          },
+                          '@keyframes pulse': {
+                            '0%, 100%': {
+                              transform: 'scale(1)',
+                              opacity: 1
+                            },
+                            '50%': {
+                              transform: 'scale(1.1)',
+                              opacity: 0.8
+                            }
+                          }
+                        }}>
+                          {wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...'}
+                        </Box>
+                      )}
+                    </Box>
+                  ) : (
+                    // Palabra visible normalmente
+                    <Box sx={{ width: '100%', textAlign: 'center' }}>
+                      {wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...'}
+                    </Box>
+                  )}
+                </Box>
+              </Box>
+            )}
+
+            {/* Next turn controls - appear after turn info */}
+            {isRoundActive && state.isHost && !wordRevealing && showControls && (
+                <Button
+                  variant="contained"
+                  color="primary"
+                  size="large"
+                  sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%', mt: 3 }}
+                  onClick={nextRound}
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? '⏳...' : 'Siguiente palabra'}
+                </Button>
+            )}
+          </Box>
+        </Card>
+      )}
+      {!isRoundActive && !showRecoveringState && (
         <Card sx={{ maxWidth: 430, width: '100%', p: { xs: 2, sm: 3 }, boxShadow: 2, textAlign: 'left', bgcolor: '#fff', mb: 2 }}>
           <Typography variant="h6" sx={{ color: '#e64a19', mb: 1 }}>
             Reglas rápidas
@@ -1054,6 +1346,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
             </ListItem>
           </List>
         </Card>
-      </Box>
+      )}
+    </Box>
   );
 }

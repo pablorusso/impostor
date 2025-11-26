@@ -1,9 +1,10 @@
-import { nanoid } from 'nanoid';
+import { nanoid, customAlphabet } from 'nanoid';
 import { Game, Player, PlayerState, Round } from './types';
 import { DEFAULT_WORDS, findWordCategory } from './words';
 
 interface Store {
   games: Map<string, Game>;
+  publicGames: Set<string>;
 }
 
 function getStore(): Store {
@@ -15,6 +16,7 @@ function getStore(): Store {
     
     g[storeKey] = { 
       games: new Map<string, Game>(),
+      publicGames: new Set<string>(),
       lastAccess: Date.now()
     } as Store & { lastAccess: number };
     
@@ -54,11 +56,12 @@ function getStore(): Store {
   return store;
 }
 
-export function createGame(hostName: string, words?: string[], shareCategories?: boolean): { code: string; hostId: string; playerId: string } {
+export function createGame(hostName: string, words?: string[], shareCategories?: boolean, allowAllKick: boolean = true, isPublic: boolean = false): { code: string; hostId: string; playerId: string } {
   const store = getStore();
+  const generateGameCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 5);
   let code: string;
   do {
-    code = Math.random().toString(36).slice(2, 7).toUpperCase();
+    code = generateGameCode();
   } while (store.games.has(code));
   const hostId = nanoid();
   const hostPlayer: Player = { id: hostId, name: hostName.trim() };
@@ -68,6 +71,8 @@ export function createGame(hostName: string, words?: string[], shareCategories?:
     players: [hostPlayer],
     words: (words && words.length > 0 ? words : DEFAULT_WORDS).map((w: string) => w.trim()).filter(Boolean),
     shareCategories: shareCategories || false,
+    allowAllKick,
+    isPublic,
   };
   
   // Añadir timestamp para tracking
@@ -75,6 +80,9 @@ export function createGame(hostName: string, words?: string[], shareCategories?:
   (hostPlayer as any).lastSeen = Date.now();
   
   store.games.set(code, game);
+  if (isPublic) {
+    store.publicGames.add(code.toUpperCase());
+  }
   
   return { code, hostId, playerId: hostId };
 }
@@ -122,6 +130,7 @@ export function startRound(code: string): boolean {
   const category = findWordCategory(word);
   const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
   game.currentRound = round;
+  getStore().publicGames.delete(code.toUpperCase());
   
   return true;
 }
@@ -160,6 +169,7 @@ export function nextRound(code: string): boolean {
   const category = findWordCategory(word);
   const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
   game.currentRound = round;
+  getStore().publicGames.delete(code.toUpperCase());
   return true;
 }
 
@@ -175,6 +185,7 @@ export function closeGame(code: string): boolean {
   const store = getStore();
   const key = code.toUpperCase();
   if (!store.games.has(key)) return false;
+  store.publicGames.delete(key);
   store.games.delete(key);
   return true;
 }
@@ -194,11 +205,6 @@ export function leaveGame(code: string, playerId: string): { ok: boolean; gameEn
   
   const playerIndex = game.players.findIndex(p => p.id === playerId);
   if (playerIndex === -1) return { ok: false, error: 'Player not found' };
-  
-  // No permitir que el host abandone (debe cerrar el juego)
-  if (game.hostId === playerId) {
-    return { ok: false, error: 'Host cannot leave, must close game' };
-  }
   
   // Remover jugador
   game.players.splice(playerIndex, 1);
@@ -231,6 +237,11 @@ export function leaveGame(code: string, playerId: string): { ok: boolean; gameEn
     game.currentRound = undefined;
     game.turnOrder = undefined;
     game.currentTurnIndex = undefined;
+  }
+
+  if (game.players.length === 0) {
+    closeGame(code);
+    return { ok: true, gameEnded: true };
   }
   
   return { ok: true };

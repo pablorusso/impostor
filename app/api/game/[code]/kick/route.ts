@@ -1,47 +1,51 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { leaveGame, getGame } from '../../../../../lib/redis-store';
+import { emit } from '../../../../../lib/events';
 
-export async function POST(request: NextRequest, { params }: { params: { code: string } }) {
-  try {
-    const { hostPlayerId, targetPlayerId } = await request.json();
-    
-    if (!hostPlayerId || !targetPlayerId) {
-      return NextResponse.json({ error: 'hostPlayerId y targetPlayerId son requeridos' }, { status: 400 });
-    }
+export async function POST(req: NextRequest, { params }: { params: { code: string } }) {
+  const body = await req.text();
+  let data: any = {};
+  try { data = body ? JSON.parse(body) : {}; } catch {}
 
-    // Verificar que el juego existe y que hostPlayerId es realmente el host
-    const game = await getGame(params.code);
-    if (!game) {
-      return NextResponse.json({ error: 'Juego no encontrado' }, { status: 404 });
-    }
+  const code = params.code?.toUpperCase();
+  const playerId: string = data.playerId || data.hostPlayerId || '';
+  const targetPlayerId: string = data.targetPlayerId || '';
 
-    // Verificar que hostPlayerId es el host del juego
-    if (game.hostId !== hostPlayerId) {
-      return NextResponse.json({ error: 'Solo el host puede expulsar jugadores' }, { status: 403 });
-    }
-
-    // Verificar que el jugador objetivo existe en el juego
-    const targetPlayer = game.players.find(p => p.id === targetPlayerId);
-    if (!targetPlayer) {
-      return NextResponse.json({ error: 'Jugador no encontrado en la partida' }, { status: 404 });
-    }
-
-    // No permitir que el host se expulse a sí mismo
-    if (hostPlayerId === targetPlayerId) {
-      return NextResponse.json({ error: 'El host no puede expulsarse a sí mismo' }, { status: 400 });
-    }
-
-    // Expulsar al jugador (usar la misma lógica que abandonar partida)
-    const updatedGame = await leaveGame(params.code, targetPlayerId);
-    
-    return NextResponse.json({ 
-      success: true, 
-      message: `Jugador ${targetPlayer.name} expulsado`,
-      game: updatedGame 
-    });
-    
-  } catch (error) {
-    console.error('Error expulsando jugador:', error);
-    return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 });
+  if (!code || !playerId || !targetPlayerId) {
+    return new Response(JSON.stringify({ error: 'Datos incompletos' }), { status: 400 });
   }
+
+  if (playerId === targetPlayerId) {
+    return new Response(JSON.stringify({ error: 'No puedes expulsarte a ti mismo' }), { status: 400 });
+  }
+
+  const game = await getGame(code);
+  if (!game) {
+    return new Response(JSON.stringify({ error: 'Partida no encontrada' }), { status: 404 });
+  }
+
+  const actorInGame = game.players.find(p => p.id === playerId);
+  const targetInGame = game.players.find(p => p.id === targetPlayerId);
+  if (!actorInGame || !targetInGame) {
+    return new Response(JSON.stringify({ error: 'Jugador no pertenece a la partida' }), { status: 403 });
+  }
+
+  const allowAll = game.allowAllKick !== false; // default true
+  const isHost = game.hostId === playerId;
+
+  if (!allowAll && !isHost) {
+    return new Response(JSON.stringify({ error: 'Solo el host puede expulsar' }), { status: 403 });
+  }
+
+  if (!allowAll && targetPlayerId === game.hostId) {
+    return new Response(JSON.stringify({ error: 'No se puede expulsar al host' }), { status: 403 });
+  }
+
+  const ok = await leaveGame(code, targetPlayerId);
+  if (!ok) {
+    return new Response(JSON.stringify({ error: 'No se pudo expulsar al jugador' }), { status: 500 });
+  }
+
+  emit(code, 'player-leave', { playerId: targetPlayerId });
+  return new Response(JSON.stringify({ ok: true }), { status: 200 });
 }

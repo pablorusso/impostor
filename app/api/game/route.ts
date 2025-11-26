@@ -10,7 +10,9 @@ export async function POST(req: NextRequest) {
   const hostName: string = (data.hostName || '').trim();
   const words: string[] | undefined = Array.isArray(data.words) ? data.words : undefined;
   const shareCategories: boolean = !!data.shareCategories;
-  
+  const allowAllKick: boolean = data.allowAllKick !== false; // default true
+  const isPublic: boolean = !!data.isPublic;
+
   if (!hostName) {
     return new Response(JSON.stringify({ error: 'Host requerido' }), { status: 400 });
   }
@@ -18,6 +20,6 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: 'PlayerID requerido' }), { status: 400 });
   }
   
-  const game = await createGame(hostPlayerId, hostName, words, shareCategories);
+  const game = await createGame(hostPlayerId, hostName, words, shareCategories, allowAllKick, isPublic);
   return new Response(JSON.stringify(game), { status: 201 });
 }
