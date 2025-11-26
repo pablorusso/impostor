@@ -105,6 +105,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [submittingAction, setSubmittingAction] = useState<string | null>(null);
   const [isKicking, setIsKicking] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const hasInitializedNameRef = useRef(false);
 
   const playHapticFallback = useCallback(() => {
     try {
@@ -223,6 +224,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
   // Inicializar nombre por defecto una sola vez al montar
   useEffect(() => {
+    if (hasInitializedNameRef.current) return;
+    hasInitializedNameRef.current = true;
+
     const savedName = PlayerSession.getLastPlayerName();
     if (savedName) {
       setDefaultName(savedName);
@@ -233,16 +237,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         window.location.href = '/';
       }
     }
-  }, []);
-
-  // Auto-unirse si hay nombre guardado y no existe playerId aún
-  useEffect(() => {
-    if (!playerId && name && !initializing && !joining && !autoJoinAttempted) {
-      setAutoJoinAttempted(true);
-      setAutoJoining(true);
-      join();
-    }
-  }, [playerId, name, initializing, joining, autoJoinAttempted, join]);
+  }, [playerId]);
 
   const refresh = useCallback(async (pIdToUse?: string) => {
     const finalPlayerId = pIdToUse || playerId;
@@ -551,36 +546,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, [state?.round, lastRoundId]);
 
-  // Detectar cambio de turno y vibrar en móviles
-  useEffect(() => {
-    // Solo activar si hay una ronda activa y el estado está completo
-    if (state?.round && state.isMyTurn !== undefined) {
-      // Si ahora es mi turno pero antes no lo era, vibrar
-      if (state.isMyTurn && !wasMyTurnPreviously) {
-        console.log('[Turn] It is now my turn, triggering vibration');
-        vibrateOnTurn();
-      }
-      
-      // Actualizar el estado anterior
-      setWasMyTurnPreviously(state.isMyTurn);
-    }
-  }, [state?.isMyTurn, state?.round, wasMyTurnPreviously, vibrateOnTurn]);
-
-  // Contador regresivo para revelado
-  useEffect(() => {
-    if (countdown > 0) {
-      const timer = setTimeout(() => {
-        setCountdown(countdown - 1);
-      }, 1000);
-      return () => clearTimeout(timer);
-    } else if (wordRevealing && countdown === 0) {
-      setTimeout(() => {
-        setWordRevealing(false);
-      }, 500); // Pequeño delay para la animación final
-    }
-  }, [countdown, wordRevealing]);
-
-  async function join() {
+  const join = useCallback(async () => {
     setJoining(true); setError(null);
     try {
       const currentPlayerId = PlayerSession.getPlayerId();
@@ -614,7 +580,45 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       setJoining(false); 
       setAutoJoining(false);
     }
-  }
+  }, [code, name, refresh]);
+
+  // Auto-unirse si hay nombre guardado y no existe playerId aún
+  useEffect(() => {
+    if (!playerId && name && !initializing && !joining && !autoJoinAttempted) {
+      setAutoJoinAttempted(true);
+      setAutoJoining(true);
+      join();
+    }
+  }, [playerId, name, initializing, joining, autoJoinAttempted, join]);
+
+  // Detectar cambio de turno y vibrar en móviles
+  useEffect(() => {
+    // Solo activar si hay una ronda activa y el estado está completo
+    if (state?.round && state.isMyTurn !== undefined) {
+      // Si ahora es mi turno pero antes no lo era, vibrar
+      if (state.isMyTurn && !wasMyTurnPreviously) {
+        console.log('[Turn] It is now my turn, triggering vibration');
+        vibrateOnTurn();
+      }
+      
+      // Actualizar el estado anterior
+      setWasMyTurnPreviously(state.isMyTurn);
+    }
+  }, [state?.isMyTurn, state?.round, wasMyTurnPreviously, vibrateOnTurn]);
+
+  // Contador regresivo para revelado
+  useEffect(() => {
+    if (countdown > 0) {
+      const timer = setTimeout(() => {
+        setCountdown(countdown - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    } else if (wordRevealing && countdown === 0) {
+      setTimeout(() => {
+        setWordRevealing(false);
+      }, 500); // Pequeño delay para la animación final
+    }
+  }, [countdown, wordRevealing]);
 
   async function startRound() {
     if (isSubmitting || isKicking) return;

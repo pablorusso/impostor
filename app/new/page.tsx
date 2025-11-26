@@ -393,7 +393,7 @@ export default function NewGamePage() {
               sx={{ bgcolor: '#fff', borderRadius: 1, mb: 1 }}
             />
             <Typography sx={{ color: '#666', fontSize: 12 }}>
-              Ejemplos: "gato, perro, pájaro" o una por línea. Se mezclarán con las categorías seleccionadas.
+              Ejemplos: &quot;gato, perro, pájaro&quot; o una por línea. Se mezclarán con las categorías seleccionadas.
             </Typography>
           </Card>
 
