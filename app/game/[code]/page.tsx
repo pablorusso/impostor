@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from 'react';
+import Pusher from 'pusher-js';
 import { PlayerState } from '../../../lib/types';
 import { Box, Button, Card, Typography, TextField, Chip, Stack, Divider, List, ListItem, ListItemText } from '@mui/material';
 import { useConnection } from '../../contexts/ConnectionContext';
@@ -99,6 +100,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [initializing, setInitializing] = useState(true);
   const [wasMyTurnPreviously, setWasMyTurnPreviously] = useState(false);
   const [hasVibratedForWord, setHasVibratedForWord] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
 
   const playHapticFallback = useCallback(() => {
@@ -225,17 +227,18 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (!playerId) return;
+  const refresh = useCallback(async (pIdToUse?: string) => {
+    const finalPlayerId = pIdToUse || playerId;
+    if (!finalPlayerId) return;
     
     try {
       // Timeout más conservador para Vercel con headers específicos
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       
-      console.log(`[Refresh] Fetching state for player: ${playerId}`);
+      console.log(`[Refresh] Fetching state for player: ${finalPlayerId}`);
       
-      const res = await fetch(`/api/game/${code}/state?pid=${playerId}`, {
+      const res = await fetch(`/api/game/${code}/state?pid=${finalPlayerId}`, {
         signal: controller.signal,
         cache: 'no-store', // Evitar cache en Vercel
         headers: {
@@ -268,12 +271,12 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         });
         
         // Detectar pérdida de sesión
-        if (detectSessionLoss(data, playerId)) {
+        if (detectSessionLoss(data, finalPlayerId)) {
           console.warn('[Refresh] Session loss detected');
           
           // Intentar recuperación automática para Safari
           if (isSafari()) {
-            const recoveredId = await safariRecovery(code, playerId);
+            const recoveredId = await safariRecovery(code, finalPlayerId);
             if (recoveredId) {
               console.log('[Safari] Session recovered successfully');
               setPlayerId(recoveredId);
@@ -289,7 +292,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           setState(null);
           setPlayerId(undefined);
           // Solo limpiar nombre si ya estaba conectado
-          if (playerId) {
+          if (finalPlayerId) {
             setName('');
           }
           if (typeof window !== 'undefined') {
@@ -307,7 +310,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           console.warn('[Refresh] Incomplete data received, structure check failed');
           // Intentar una vez más después de un delay
           setTimeout(() => {
-            if (playerId) {
+            if (finalPlayerId) {
               console.log('[Refresh] Retrying after invalid data...');
               refresh();
             }
@@ -317,7 +320,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         console.warn(`[Refresh] Server returned status ${res.status}, retrying...`);
         // Reintentar después de un delay
         setTimeout(() => {
-          if (playerId) refresh();
+          if (finalPlayerId) refresh();
         }, 3000);
       }
     } catch (error) {
@@ -328,7 +331,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       }
       // Reintentar después de un delay más largo
       setTimeout(() => {
-        if (playerId) {
+        if (finalPlayerId) {
           console.log('[Refresh] Retrying after error...');
           refresh();
         }
@@ -448,120 +451,73 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }, [playerId, code]);
 
-  // Usar polling como mecanismo principal para máxima estabilidad
-  const pollingRef = useRef<NodeJS.Timeout | null>(null);
-  const lastStateRef = useRef<string | null>(null);
   const { setConnectionStatus, setRetryCount } = useConnection();
-  
+  const lastStateRef = useRef<string | null>(null);
+
+  // Reemplazo de Polling por Pusher
   useEffect(() => {
-    if (!playerId) return;
-    
-    console.log('[Connection] Starting robust polling mode for maximum stability');
+    if (!playerId || !process.env.NEXT_PUBLIC_PUSHER_KEY) return;
+
+    console.log('[Pusher] Initializing connection...');
     setConnectionStatus('connecting');
-    
-    // Polling agresivo con detección proactiva de cambios
-    const startPolling = () => {
-      let consecutiveErrors = 0;
-      const maxErrors = 5;
-      
-      const poll = async () => {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 8000); // Timeout más corto
-          
-          const res = await fetch(`/api/game/${code}/state?pid=${playerId}&t=${Date.now()}`, {
-            signal: controller.signal,
-            cache: 'no-store',
-            headers: {
-              'Cache-Control': 'no-cache, no-store, must-revalidate',
-              'Pragma': 'no-cache',
-              'Expires': '0'
-            }
-          });
-          
-          clearTimeout(timeoutId);
-          
-          if (res.status === 404) {
-            console.log('[Polling] Game not found, redirecting to home');
-            sessionStorage.clear();
-            window.location.href = '/';
-            return;
-          }
-          
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-          }
-          
-          const newState = await res.json();
-          
-          // Detectar si el jugador fue expulsado (juego existe pero jugador no está en la lista)
-          if (newState && newState.game && !newState.player) {
-            console.log('[Polling] Player no longer in game (expelled), redirecting to home');
-            sessionStorage.clear();
-            window.location.href = '/';
-            return;
-          }
-          
-          const stateHash = JSON.stringify(newState);
-          
-          // Detectar cambios en el estado
-          if (lastStateRef.current !== stateHash) {
-            console.log('[Polling] State change detected, updating');
-            setState(newState);
-            lastStateRef.current = stateHash;
-          }
-          
-          // Reset error counter on success
-          consecutiveErrors = 0;
-          setConnectionStatus('connected');
-          setRetryCount(0);
-          
-        } catch (error: any) {
-          consecutiveErrors++;
-          console.warn(`[Polling] Error (${consecutiveErrors}/${maxErrors}):`, error.message);
-          
-          if (consecutiveErrors >= maxErrors) {
-            setConnectionStatus('error');
-            setRetryCount(prev => {
-              const newCount = prev + 1;
-              
-              if (newCount >= 10) {
-                console.log('[Polling] Too many failed attempts, redirecting to home');
-                sessionStorage.clear();
-                window.location.href = '/';
-                return newCount;
-              }
-              
-              // Backoff exponencial pero limitado
-              const backoffTime = Math.min(1000 * Math.pow(1.5, newCount), 10000);
-              console.log(`[Polling] Backing off for ${backoffTime}ms`);
-              setTimeout(() => {
-                setConnectionStatus('connecting');
-                consecutiveErrors = 0;
-              }, backoffTime);
-              
-              return newCount;
-            });
-          }
-        }
-      };
-      
-      // Carga inicial
-      poll();
-      
-      // Polling cada 1.5 segundos para balance entre responsividad y carga
-      pollingRef.current = setInterval(poll, 1500);
-    };
-    
-    startPolling();
-    
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
+
+    const PusherClient = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY, {
+      cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+      authEndpoint: `/api/pusher/auth`,
+      auth: {
+        headers: {
+          'x-player-id': playerId,
+        },
+      },
+    });
+
+    const channelName = `private-game-${code.toUpperCase()}`;
+    const channel = PusherClient.subscribe(channelName);
+
+    channel.bind('pusher:subscription_succeeded', () => {
+      console.log(`[Pusher] Successfully subscribed to channel ${channelName}`);
+      setConnectionStatus('connected');
+      setRetryCount(0);
+      // Realizar una actualización inicial al conectar para asegurar sincronización
+      refresh();
+    });
+
+    channel.bind('pusher:subscription_error', (status: number) => {
+      console.error(`[Pusher] Subscription failed with status ${status}`);
+      setConnectionStatus('error');
+      // Si el error es de autorización, podría ser un problema de sesión
+      if (status === 403) {
+        console.error('[Pusher] Auth error, session might be invalid. Redirecting...');
+        sessionStorage.clear();
+        window.location.href = '/';
       }
+    });
+
+    channel.bind('game-update', (data: any) => {
+      console.log('[Pusher] Received "game-update" event:', data);
+      // En lugar de actualizar el estado directamente con el payload,
+      // refrescamos desde el servidor para obtener la vista de estado
+      // personalizada y segura para este jugador.
+      refresh();
+    });
+
+    // Manejo de la conexión general
+    PusherClient.connection.bind('connected', () => {
+      console.log('[Pusher] Connection established');
+      setConnectionStatus('connected');
+    });
+
+    PusherClient.connection.bind('error', (err: any) => {
+      console.error('[Pusher] Connection error:', err);
+      setConnectionStatus('error');
+      setRetryCount(prev => prev + 1);
+    });
+
+    return () => {
+      console.log('[Pusher] Disconnecting...');
+      PusherClient.disconnect();
     };
-  }, [code, playerId, setConnectionStatus, setRetryCount]);
+  }, [code, playerId, refresh, setConnectionStatus, setRetryCount]);
 
   // Detectar nueva ronda e iniciar animación
   useEffect(() => {
@@ -572,6 +528,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       setShowTurnInfo(false);
       setShowControls(false);
       setHasVibratedForWord(false);
+      setIsSubmitting(false); // Reset submitting state when new round is confirmed
       
       // Mostrar información de turno después de 4 segundos de la palabra
       setTimeout(() => {
@@ -638,7 +595,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         sessionStorage.setItem('playerName', name);
         setPlayerId(data.playerId);
         setName('');
-        setTimeout(refresh, 300);
+        await refresh(data.playerId);
       } else {
         throw new Error('Respuesta inválida del servidor');
       }
@@ -650,78 +607,180 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   }
 
   async function startRound() {
-    await fetch(`/api/game/${code}/start-round`, { method: 'POST' });
-    setTimeout(refresh, 300);
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+        await fetch(`/api/game/${code}/start-round`, { method: 'POST' });
+        // On success, Pusher will trigger a refresh. The useEffect that detects 
+        // a new round will be responsible for setting isSubmitting to false.
+    } catch (error) {
+        console.error('Failed to start round:', error);
+        setIsSubmitting(false); // Reset on error
+        refresh(); // Fetch true state on error
+    }
   }
   async function nextRound() {
-    await fetch(`/api/game/${code}/next-round`, { method: 'POST' });
-    setTimeout(refresh, 300);
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+        await fetch(`/api/game/${code}/next-round`, { method: 'POST' });
+        // On success, Pusher will trigger a refresh.
+    } catch (error) {
+        console.error('Failed to go to next round:', error);
+        setIsSubmitting(false); // Reset on error
+        refresh();
+    }
   }
   async function nextTurn() {
-    await fetch(`/api/game/${code}/next-turn`, { method: 'POST' });
-    setTimeout(refresh, 300);
+    if (!state || !state.currentTurnPlayer || isSubmitting) return;
+
+    const originalState = state;
+    setIsSubmitting(true);
+
+    // Optimistic update: Set the new turn immediately on the client
+    setState(currentState => {
+        if (!currentState || !currentState.currentTurnPlayer) {
+            // Should not happen, but as a safeguard.
+            return currentState;
+        }
+
+        const players = currentState.game.players;
+        const currentPlayerIndex = players.findIndex(p => p.id === currentState.currentTurnPlayer!.id);
+
+        if (currentPlayerIndex === -1) {
+            // Player not found, something is wrong, cancel optimistic update.
+            return currentState;
+        }
+
+        const nextPlayerIndex = (currentPlayerIndex + 1) % players.length;
+        const nextPlayer = players[nextPlayerIndex];
+        
+        const newState = {
+            ...currentState,
+            currentTurnPlayer: nextPlayer,
+            isMyTurn: nextPlayer.id === playerId,
+        };
+        console.log('[Optimistic] New turn for:', nextPlayer.name);
+        return newState;
+    });
+
+    try {
+        const res = await fetch(`/api/game/${code}/next-turn`, { method: 'POST' });
+        if (!res.ok) {
+            console.warn('[Optimistic] Next turn failed on server, reverting state.');
+            setState(originalState); // Revert to pre-optimistic state on failure
+        }
+        // On success, the Pusher event will arrive with the canonical state,
+        // overwriting the optimistic one.
+    } catch (error) {
+        console.error('Error during next turn:', error);
+        setState(originalState); // Revert on network error
+    } finally {
+        // The submitting state can be safely turned off.
+        setIsSubmitting(false);
+    }
   }
   async function closeGame() {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+
+    // Optimistic redirect.
+    sessionStorage.clear();
+    window.location.href = '/';
+
     try {
-      const res = await fetch(`/api/game/${code}/close`, { method: 'POST' });
-      if (res.ok || res.status === 404) {
-        // Si el juego se cerró correctamente o ya no existe (404), limpiar y redirigir
-        sessionStorage.clear();
-        window.location.href = '/';
-      }
+      // Fire and forget.
+      await fetch(`/api/game/${code}/close`, { method: 'POST' });
     } catch (error) {
-      // En caso de error de red, también limpiar y redirigir
-      sessionStorage.clear();
-      window.location.href = '/';
+      console.error('Failed to notify server about closing game:', error);
     }
   }
 
   async function leaveGame() {
-    try {
-      const res = await fetch(`/api/game/${code}/leave`, { 
-        method: 'POST', 
-        body: JSON.stringify({ playerId }) 
-      });
-      if (res.ok || res.status === 404) {
-        // Si se abandonó correctamente o el juego ya no existe, limpiar y redirigir
-        sessionStorage.clear();
-        window.location.href = '/';
-      }
-    } catch (error) {
-      // En caso de error de red, también limpiar y redirigir
-      sessionStorage.clear();
-      window.location.href = '/';
-    }
-  }
-
-  async function kickPlayer(targetPlayerId: string, playerName: string) {
-    if (!confirm(`¿Estás seguro de que quieres expulsar a ${playerName}?`)) {
-      return;
-    }
+    setIsSubmitting(true); // Indicate that an action is in progress
 
     try {
-      const res = await fetch(`/api/game/${code}/kick`, {
+      const res = await fetch(`/api/game/${code}/leave`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
-          hostPlayerId: playerId, 
-          targetPlayerId 
-        })
+        body: JSON.stringify({ playerId })
       });
 
       if (res.ok) {
-        console.log(`Player ${playerName} kicked successfully`);
-        setTimeout(refresh, 300); // Refrescar el estado del juego
+        // Only clear session and redirect on success
+        sessionStorage.clear();
+        window.location.href = '/';
       } else {
         const errorData = await res.json();
-        console.error('Error kicking player:', errorData.error);
-        alert(`Error al expulsar jugador: ${errorData.error}`);
+        console.error('Failed to leave game:', errorData.error);
+        alert(`Error al abandonar partida: ${errorData.error}`);
+        // Re-fetch state to reflect actual server state
+        refresh();
       }
     } catch (error) {
-      console.error('Network error kicking player:', error);
-      alert('Error de red al expulsar jugador');
+      console.error('Network error leaving game:', error);
+      alert('Error de red al abandonar partida');
+      // Re-fetch state to reflect actual server state
+      refresh();
+    } finally {
+      setIsSubmitting(false); // Reset submitting state
+    }
+  }
+
+  async function kickPlayer(targetPlayerId: string, playerName: string) {
+    if (isSubmitting) return;
+
+    if (!confirm(`¿Estás seguro de que quieres expulsar a ${playerName}?`)) {
+        return;
+    }
+
+    const originalState = state;
+    setIsSubmitting(true);
+
+    // Optimistic update
+    setState(currentState => {
+        if (!currentState) return null;
+        const newPlayers = currentState.game.players.filter(p => p.id !== targetPlayerId);
+        const newState = {
+            ...currentState,
+            game: {
+                ...currentState.game,
+                players: newPlayers
+            }
+        };
+        console.log('[Optimistic] Kicked player:', playerName);
+        return newState;
+    });
+
+    try {
+        const res = await fetch(`/api/game/${code}/kick`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                hostPlayerId: playerId,
+                targetPlayerId
+            })
+        });
+
+        if (!res.ok) {
+            const errorData = await res.json();
+            console.error('Error kicking player:', errorData.error);
+            alert(`Error al expulsar jugador: ${errorData.error}`);
+            // Revert on failure
+            setState(originalState);
+        }
+        // On success, Pusher will trigger a full refresh anyway, which is fine.
+    } catch (error) {
+        console.error('Network error kicking player:', error);
+        alert('Error de red al expulsar jugador');
+        // Revert on failure
+        setState(originalState);
+    } finally {
+        setIsSubmitting(false);
     }
   }
 
@@ -840,6 +899,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                       <Button
                         size="small"
                         onClick={() => kickPlayer(p.id, p.name)}
+                        disabled={isSubmitting}
                         sx={{
                           position: 'absolute',
                           top: -8,
@@ -933,8 +993,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                       size="large" 
                       sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3 }}
                       onClick={nextRound}
+                      disabled={isSubmitting}
                     >
-                      🔄 Siguiente palabra
+                      {isSubmitting ? '⏳...' : '🔄 Siguiente palabra'}
                     </Button>
                   )}
                   <Button 
@@ -943,8 +1004,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     size="large" 
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3 }}
                     onClick={nextTurn}
+                    disabled={isSubmitting}
                   >
-                    👉 Siguiente jugador
+                    {isSubmitting ? '⏳...' : '👉 Siguiente jugador'}
                   </Button>
                 </Box>
               )}
@@ -953,8 +1015,8 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
               {state.isHost && !isRoundActive && playerId && (
                 <Stack direction="row" spacing={2} justifyContent="center" sx={{ mb: 2 }}>
-                  <Button variant="contained" color="primary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3 }} onClick={startRound} disabled={state.game.players.length<3}>
-                    🎯 Iniciar
+                  <Button variant="contained" color="primary" size="large" sx={{ fontSize: 18, px: 3, py: 1.2, borderRadius: 3 }} onClick={startRound} disabled={state.game.players.length<3 || isSubmitting}>
+                    {isSubmitting ? '⏳...' : '🎯 Iniciar'}
                   </Button>
                 </Stack>
               )}
@@ -1071,8 +1133,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     size="large" 
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
                     onClick={leaveGame}
+                    disabled={isSubmitting}
                   >
-                    🚪 Abandonar
+                    {isSubmitting ? '⏳ Abandonando...' : '🚪 Abandonar'}
                   </Button>
                   <Button 
                     variant="outlined" 
@@ -1080,8 +1143,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     size="large" 
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }}
                     onClick={closeGame}
+                    disabled={isSubmitting}
                   >
-                    🏁 Finalizar
+                    {isSubmitting ? '⏳...' : '🏁 Finalizar'}
                   </Button>
                 </Box>
               )}
@@ -1095,8 +1159,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     size="large" 
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
                     onClick={leaveGame}
+                    disabled={isSubmitting}
                   >
-                    🚪 Abandonar
+                    {isSubmitting ? '⏳ Abandonando...' : '🚪 Abandonar'}
                   </Button>
                   <Button 
                     variant="outlined" 
@@ -1104,8 +1169,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     size="large" 
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#f5f5f5' }}
                     onClick={closeGame}
+                    disabled={isSubmitting}
                   >
-                    🏁 Finalizar
+                    {isSubmitting ? '⏳...' : '🏁 Finalizar'}
                   </Button>
                 </Box>
               )}
@@ -1119,8 +1185,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     size="large" 
                     sx={{ fontSize: 16, px: 3, py: 1.2, borderRadius: 3, bgcolor: '#ffeaea' }}
                     onClick={leaveGame}
+                    disabled={isSubmitting}
                   >
-                    🚪 Abandonar
+                    {isSubmitting ? '⏳ Abandonando...' : '🚪 Abandonar'}
                   </Button>
                 </Box>
               )}
