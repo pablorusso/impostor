@@ -1185,7 +1185,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                   }
                 }
               }}>
-                <Typography variant="h6" sx={{ color: '#2e7d32', mb: 1, textAlign: 'center' }}>
+                <Typography variant="h6" sx={{ color: '#2e7d32', textAlign: 'center' }}>
                   {state.isMyTurn ? (<span>🫵 <strong>¡Es tu turno!</strong></span>) : (<span>👉 Turno de: <strong>{state.currentTurnPlayer.name}</strong></span>)}
                 </Typography>
               </Box>
