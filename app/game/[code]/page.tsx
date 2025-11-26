@@ -974,7 +974,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                       color={p.id === playerId ? 'primary' : 'default'}
                       sx={{ fontSize: 14, px: 1.25, width: '100%', justifyContent: 'center' }}
                     />
-                    {p.id === playerId ? (
+                    {p.id === playerId && !state.isHost ? (
                       <Button
                         size="small"
                         onClick={() => {
