@@ -12,6 +12,11 @@ function isSafari(): boolean {
   return /Safari/.test(ua) && !/Chrome/.test(ua) && !/Chromium/.test(ua);
 }
 
+function isIOSDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent);
+}
+
 // Leer playerId sólo en cliente tras el montaje para evitar discrepancias SSR/CSR y errores de hidratación.
 function readPlayerIdClient(): string | undefined {
   const pidParam = new URLSearchParams(window.location.search).get('pid');
@@ -93,13 +98,67 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [defaultName, setDefaultName] = useState('');
   const [initializing, setInitializing] = useState(true);
   const [wasMyTurnPreviously, setWasMyTurnPreviously] = useState(false);
+  const [hasVibratedForWord, setHasVibratedForWord] = useState(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
+
+  const playHapticFallback = useCallback(() => {
+    try {
+      const AudioContextClass = typeof window !== 'undefined'
+        ? (window.AudioContext || (window as any).webkitAudioContext)
+        : null;
+      if (!AudioContextClass) {
+        console.warn('[Vibration] AudioContext not available for fallback');
+        return false;
+      }
+
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContextClass();
+      }
+
+      const ctx = audioContextRef.current;
+      if (!ctx) return false;
+
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      // Breve pulso de baja frecuencia para simular la vibracion
+      const duration = 0.12;
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator.type = 'square';
+      oscillator.frequency.setValueAtTime(120, ctx.currentTime);
+
+      gainNode.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.01);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + duration);
+
+      console.log('[Vibration] Played audio fallback haptic');
+      return true;
+    } catch (error) {
+      console.warn('[Vibration] Fallback haptic failed:', error);
+      return false;
+    }
+  }, []);
 
   // Función para vibración en móviles
   const vibrateOnTurn = useCallback(() => {
     console.log('[Vibration] Attempting to vibrate for turn notification');
+
+    if (typeof navigator === 'undefined') {
+      console.warn('[Vibration] navigator is undefined');
+      return;
+    }
     
     // Verificar si el navegador soporta vibración
-    if ('vibrate' in navigator) {
+    if ('vibrate' in navigator && typeof navigator.vibrate === 'function') {
       try {
         // Verificar si estamos en HTTPS o localhost (requerido para vibración en algunos navegadores)
         const isSecure = window.location.protocol === 'https:' || window.location.hostname === 'localhost';
@@ -119,12 +178,42 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       } catch (error) {
         console.warn('[Vibration] Failed to vibrate:', error);
       }
+      return;
     } else {
       console.log('[Vibration] API not supported on this device/browser');
-      if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
-        console.log('[Vibration] User agent:', (navigator as any).userAgent);
+      if (isIOSDevice()) {
+        const fallbackResult = playHapticFallback();
+        console.log('[Vibration] Used iOS audio fallback:', fallbackResult);
       }
+      console.log('[Vibration] User agent:', (navigator as any).userAgent);
     }
+  }, [playHapticFallback]);
+
+  useEffect(() => {
+    const unlockAudio = () => {
+      try {
+        const AudioContextClass = typeof window !== 'undefined'
+          ? (window.AudioContext || (window as any).webkitAudioContext)
+          : null;
+        if (!AudioContextClass) return;
+
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioContextClass();
+        } else if (audioContextRef.current.state === 'suspended') {
+          audioContextRef.current.resume();
+        }
+      } catch (error) {
+        console.warn('[Vibration] Unable to unlock audio context:', error);
+      }
+    };
+
+    window.addEventListener('touchstart', unlockAudio, { once: true });
+    window.addEventListener('click', unlockAudio, { once: true });
+
+    return () => {
+      window.removeEventListener('touchstart', unlockAudio);
+      window.removeEventListener('click', unlockAudio);
+    };
   }, []);
 
   // Inicializar nombre por defecto una sola vez al montar
@@ -482,6 +571,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       setCountdown(3);
       setShowTurnInfo(false);
       setShowControls(false);
+      setHasVibratedForWord(false);
       
       // Mostrar información de turno después de 4 segundos de la palabra
       setTimeout(() => {
@@ -641,6 +731,15 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   // Mostrar categoría si está disponible
   const categoryVisible = state?.categoryForPlayer;
   const categoryInfo = categoryVisible ? CATEGORY_DISPLAY_INFO[categoryVisible as keyof typeof CATEGORY_DISPLAY_INFO] : null;
+  useEffect(() => {
+    const wordIsVisible = isRoundActive && !wordRevealing && countdown === 0 && !!wordVisible;
+    if (wordIsVisible && !hasVibratedForWord) {
+      console.log('[Vibration] Word visible, triggering feedback');
+      vibrateOnTurn();
+      setHasVibratedForWord(true);
+    }
+  }, [isRoundActive, wordVisible, wordRevealing, countdown, hasVibratedForWord, vibrateOnTurn]);
+
 
   // Show loading while initializing to avoid premature join form display
   if (initializing) {

@@ -220,14 +220,14 @@ async function transferHost(game: Game): Promise<void> {
 export async function createGame(hostPlayerId: string, hostName: string, words?: string[], shareCategories?: boolean): Promise<{ code: string; hostId: string; playerId: string }> {
   const store = getStore();
   let code: string;
-  
+ 
   // Generar código único
   do {
     code = nanoid(5).toUpperCase();
   } while (await store.exists(GAME_KEY(code)));
 
   const hostPlayer: Player = { id: hostPlayerId, name: hostName.trim() };
-  
+ 
   const game: Game = {
     code,
     hostId: hostPlayerId,
@@ -235,12 +235,31 @@ export async function createGame(hostPlayerId: string, hostName: string, words?:
     words: (words && words.length > 0 ? words : DEFAULT_WORDS).slice().sort(() => Math.random() - 0.5),
     shareCategories: shareCategories || false,
   };
+  
+  // --- START: Add random players if env var is set ---
+  if (process.env.ADD_RANDOM_PLAYERS === 'true') {
+    const numberOfBots = 3;
+    for (let i = 1; i <= numberOfBots; i++) {
+      const botPlayer: Player = {
+        id: `bot-${nanoid()}`,
+        name: `Bot ${i}`
+      };
+      game.players.push(botPlayer);
+      
+      // We don't wait for this promise to resolve to speed up game creation
+      setPlayerGameMapping(botPlayer.id, code);
+    }
+
+    const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
+    console.log(`[${storeType}] Added ${numberOfBots} bot players to game ${code} due to ADD_RANDOM_PLAYERS flag.`);
+  }
+  // --- END: Add random players ---
 
   try {
     await store.set(GAME_KEY(code), game);
     // Mapear PlayerID -> GameCode
     await setPlayerGameMapping(hostPlayerId, code);
-    
+
     const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
     console.log(`[${storeType}] Game created: ${code} with ${game.words.length} words, host: ${hostName} (${hostPlayerId}), shareCategories: ${shareCategories}`);
     return { code, hostId: hostPlayerId, playerId: hostPlayerId };
