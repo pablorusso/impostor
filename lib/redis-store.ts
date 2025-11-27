@@ -3,10 +3,13 @@ import { nanoid, customAlphabet } from 'nanoid';
 import { Game, Player, PlayerState, Round } from './types';
 import { DEFAULT_WORDS, findWordCategory } from './words';
 
-const GAME_TTL = 6 * 60 * 60; // 6 hours in seconds
+const GAME_TTL_SECONDS = 60 * 60; // 1 hour in seconds
+const GAME_TTL_MS = GAME_TTL_SECONDS * 1000;
+
+type MemoryEntry = { value: any; expiresAt: number };
 
 // Fallback store for development when Redis is not available
-let memoryStore: Map<string, Game> = new Map();
+let memoryStore: Map<string, MemoryEntry> = new Map();
 
 // Redis client instance
 let redisClient: ReturnType<typeof createClient> | null = null;
@@ -48,7 +51,10 @@ const getStore = () => {
         
         try {
           const data = await client.get(key);
-          return data ? JSON.parse(data) : null;
+          if (!data) return null;
+          
+          await client.expire(key, GAME_TTL_SECONDS);
+          return JSON.parse(data);
         } catch (error) {
           console.error('[REDIS] Get error:', error);
           return null;
@@ -59,7 +65,7 @@ const getStore = () => {
         if (!client) return value;
         
         try {
-          await client.setEx(key, GAME_TTL, JSON.stringify(value));
+          await client.setEx(key, GAME_TTL_SECONDS, JSON.stringify(value));
           return value;
         } catch (error) {
           console.error('[REDIS] Set error:', error);
@@ -84,10 +90,24 @@ const getStore = () => {
         
         try {
           const result = await client.exists(key);
-          return result === 1;
+          if (result === 1) {
+            await client.expire(key, GAME_TTL_SECONDS);
+            return true;
+          }
+          return false;
         } catch (error) {
           console.error('[REDIS] Exists error:', error);
           return false;
+        }
+      },
+      async touch(keys: string[]) {
+        const client = await getRedisClient();
+        if (!client) return;
+
+        try {
+          await Promise.all(keys.map(key => client.expire(key, GAME_TTL_SECONDS)));
+        } catch (error) {
+          console.error('[REDIS] Touch error:', error);
         }
       }
     };
@@ -95,17 +115,47 @@ const getStore = () => {
     console.log('[DEV] Using memory store (Redis not configured)');
     return {
       async get(key: string) {
-        return memoryStore.get(key) || null;
+        const entry = memoryStore.get(key);
+        if (!entry) return null;
+        
+        const now = Date.now();
+        if (entry.expiresAt <= now) {
+          memoryStore.delete(key);
+          return null;
+        }
+        
+        entry.expiresAt = now + GAME_TTL_MS;
+        return entry.value;
       },
       async set(key: string, value: any) {
-        memoryStore.set(key, value);
+        memoryStore.set(key, { value, expiresAt: Date.now() + GAME_TTL_MS });
         return value;
       },
       async del(key: string) {
         return memoryStore.delete(key);
       },
       async exists(key: string) {
-        return memoryStore.has(key);
+        const entry = memoryStore.get(key);
+        if (!entry) return false;
+        
+        const now = Date.now();
+        if (entry.expiresAt <= now) {
+          memoryStore.delete(key);
+          return false;
+        }
+        
+        entry.expiresAt = now + GAME_TTL_MS;
+        return true;
+      },
+      async touch(keys: string[]) {
+        const now = Date.now();
+        for (const key of keys) {
+          const entry = memoryStore.get(key);
+          if (!entry) continue;
+          
+          entry.expiresAt = now + GAME_TTL_MS;
+          memoryStore.set(key, entry);
+        }
       }
     };
   }
@@ -118,11 +168,31 @@ const PUBLIC_GAMES_KEY = 'games:public';
 const PLAYER_KEY = (code: string, playerId: string) => `player:${code}:${playerId}`;
 const PLAYER_GAME_MAP_KEY = (playerId: string) => `player_game:${playerId}`;
 
+async function refreshGameActivity(game: Game, store?: ReturnType<typeof getStore>): Promise<void> {
+  const activeStore = store || getStore();
+  const touch = (activeStore as any).touch as ((keys: string[]) => Promise<void>) | undefined;
+  if (!touch) return;
+
+  const keys: string[] = [GAME_KEY(game.code)];
+  const playerIds = new Set(game.players.map(p => p.id));
+  for (const playerId of playerIds) {
+    keys.push(PLAYER_GAME_MAP_KEY(playerId));
+  }
+  if (game.isPublic) {
+    keys.push(PUBLIC_GAMES_KEY);
+  }
+
+  await touch(keys);
+}
+
 // Obtener un juego por código
 export async function getGame(code: string): Promise<Game | null> {
   const store = getStore();
   try {
     const game = await store.get(GAME_KEY(code)) as Game | null;
+    if (game) {
+      await refreshGameActivity(game, store);
+    }
     return game;
   } catch (error) {
     console.error('Error getting game:', error);
@@ -135,6 +205,7 @@ export async function saveGame(game: Game): Promise<void> {
   const store = getStore();
   try {
     await store.set(GAME_KEY(game.code), game);
+    await refreshGameActivity(game, store);
   } catch (error) {
     console.error('Error saving game:', error);
     throw new Error('Failed to save game');
@@ -328,6 +399,8 @@ export async function joinGame(playerId: string, code: string, name: string): Pr
     
     const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
     console.log(`[${storeType}] Player rejoined: ${name} (${playerId}) to game ${code}`);
+
+    await refreshGameActivity(game, store);
     
     return { playerId };
   }
@@ -348,6 +421,7 @@ export async function joinGame(playerId: string, code: string, name: string): Pr
 
   // Guardar
   await store.set(GAME_KEY(code), game);
+  await refreshGameActivity(game, store);
 
   const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
   console.log(`[${storeType}] Player joined: ${name} (${playerId}) to game ${code}`);
@@ -385,6 +459,7 @@ export async function startRound(code: string): Promise<boolean> {
 
   // Guardar
   await store.set(GAME_KEY(code), game);
+  await refreshGameActivity(game, store);
 
   const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
   console.log(`[${storeType}] Round started in game ${code}: word=${word}, category=${category}, impostor=${impostorId}`);
@@ -430,6 +505,7 @@ export async function nextRound(code: string): Promise<boolean> {
 
   // Guardar
   await store.set(GAME_KEY(code), game);
+  await refreshGameActivity(game, store);
 
   const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
   console.log(`[${storeType}] Next round started in game ${code}: word=${word}, category=${category}`);
@@ -446,6 +522,7 @@ export async function nextTurn(code: string): Promise<boolean> {
 
   // Guardar
   await store.set(GAME_KEY(code), game);
+  await refreshGameActivity(game, store);
 
   const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
   console.log(`[${storeType}] Next turn in game ${code}: index=${game.currentTurnIndex}`);
@@ -462,6 +539,7 @@ export async function endRound(code: string): Promise<boolean> {
 
   // Guardar
   await store.set(GAME_KEY(code), game);
+  await refreshGameActivity(game, store);
 
   return true;
 }
@@ -576,6 +654,7 @@ export async function leaveGame(code: string, playerId: string): Promise<boolean
 
   // Guardar cambios
   await store.set(GAME_KEY(code), game);
+  await refreshGameActivity(game, store);
 
   const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
   console.log(`[${storeType}] Player left game ${code}: ${playerId}`);
@@ -618,6 +697,8 @@ export async function getState(code: string, playerId?: string): Promise<PlayerS
     isMyTurn = !!player && player.id === currentTurnPlayerId;
   }
 
+  await refreshGameActivity(game, store);
+
   return {
     isHost: !!player && player.id === game.hostId,
     game,
@@ -639,7 +720,7 @@ export async function maintenance() {
   
   try {
     // En Redis, los juegos se auto-eliminan por TTL
-    console.log('[REDIS] TTL-based cleanup active');
+    console.log('[REDIS] TTL-based cleanup active (1h inactivity)');
   } catch (error) {
     console.error('Error during maintenance:', error);
   }
