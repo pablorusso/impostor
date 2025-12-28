@@ -3,34 +3,42 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
+const getDeviceInfo = () => {
+  if (typeof navigator === 'undefined') {
+    return { isMobileOrTablet: false, isIOS: false };
+  }
+
+  const ua = navigator.userAgent || '';
+  const touchPoints = (navigator as any).maxTouchPoints || 0;
+  const isMobileOrTablet = /Mobi|Android|iPhone|iPad|iPod/i.test(ua) || touchPoints > 1;
+  const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  return { isMobileOrTablet, isIOS };
+};
+
+const getInstalledState = () => {
+  if (typeof window === 'undefined') return false;
+
+  const isStandalone = window.matchMedia?.('(display-mode: standalone)').matches ?? false;
+  const isInWebAppiOS = (window.navigator as any).standalone === true;
+  return isStandalone || isInWebAppiOS;
+};
+
 export default function HeaderNav() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
-  const [isInstalled, setIsInstalled] = useState(false);
-  const [isIOS, setIsIOS] = useState(false);
+  const [isInstalled, setIsInstalled] = useState(() => getInstalledState());
+  const [{ isMobileOrTablet, isIOS }] = useState(() => getDeviceInfo());
   const [showIOSInstructions, setShowIOSInstructions] = useState(false);
-  const [isMobileOrTablet, setIsMobileOrTablet] = useState(false);
 
   useEffect(() => {
-    const ua = navigator.userAgent || '';
-    const touchPoints = (navigator as any).maxTouchPoints || 0;
-    const mobileLike = /Mobi|Android|iPhone|iPad|iPod/i.test(ua) || touchPoints > 1;
-    setIsMobileOrTablet(mobileLike);
-
-    // Detectar iOS
-    const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    setIsIOS(iOS);
-
     // Verificar si ya está instalado
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
-    const isInWebAppiOS = (window.navigator as any).standalone === true;
-    setIsInstalled(isStandalone || isInWebAppiOS);
 
     // Escuchar el evento beforeinstallprompt (solo funciona en Android/Chrome)
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
-      if (!mobileLike) return;
+      if (!isMobileOrTablet) return;
       setDeferredPrompt(e);
       setIsInstallable(true);
     };
@@ -49,7 +57,7 @@ export default function HeaderNav() {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('appinstalled', handleAppInstalled);
     };
-  }, []);
+  }, [isMobileOrTablet]);
 
   const handleInstallClick = async () => {
     if (!deferredPrompt) return;
