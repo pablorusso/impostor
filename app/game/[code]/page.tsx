@@ -31,24 +31,24 @@ function detectSessionLoss(data: any, playerId: string): boolean {
     console.warn('[Session] Missing game or player data');
     return true;
   }
-  
+
   // Verificar que nuestro player ID existe en la lista de jugadores
   const playerExists = data.game.players.some((p: any) => p.id === playerId);
   if (!playerExists) {
     console.warn('[Session] Player ID not found in game players');
     return true;
   }
-  
+
   return false;
 }
 
 // Función de recuperación automática para Safari
 async function safariRecovery(code: string, currentPlayerId: string): Promise<string | null> {
   if (!isSafari()) return null;
-  
+
   try {
     console.log('[Safari] Attempting session recovery');
-    
+
     // Intentar obtener información del juego sin playerId
     const gameRes = await fetch(`/api/game/${code}/state`, {
       cache: 'no-store',
@@ -57,30 +57,30 @@ async function safariRecovery(code: string, currentPlayerId: string): Promise<st
         'Pragma': 'no-cache'
       }
     });
-    
+
     if (!gameRes.ok) return null;
-    
+
     const gameData = await gameRes.json();
     if (!gameData || !gameData.game) return null;
-    
+
     // Buscar si hay un jugador con el mismo nombre que tenemos guardado
     const savedName = sessionStorage.getItem('playerName');
     if (!savedName) return null;
-    
-    const existingPlayer = gameData.game.players.find((p: any) => 
+
+    const existingPlayer = gameData.game.players.find((p: any) =>
       p.name.toLowerCase() === savedName.toLowerCase()
     );
-    
+
     if (existingPlayer) {
       console.log('[Safari] Found existing player, recovering session');
       sessionStorage.setItem('playerId', existingPlayer.id);
       return existingPlayer.id;
     }
-    
+
   } catch (error) {
     console.warn('[Safari] Recovery failed:', error);
   }
-  
+
   return null;
 }
 
@@ -105,6 +105,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [submittingAction, setSubmittingAction] = useState<string | null>(null);
   const [isKicking, setIsKicking] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const isSubmittingRef = useRef(false);
+  const refreshAbortControllerRef = useRef<AbortController | null>(null);
+  const refreshTokenRef = useRef(0);
   const hasInitializedNameRef = useRef(false);
 
   const playHapticFallback = useCallback(() => {
@@ -162,7 +165,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       console.warn('[Vibration] navigator is undefined');
       return;
     }
-    
+
     // Verificar si el navegador soporta vibración
     if ('vibrate' in navigator && typeof navigator.vibrate === 'function') {
       try {
@@ -171,11 +174,11 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         if (!isSecure) {
           console.warn('[Vibration] May not work on non-HTTPS sites in some browsers');
         }
-        
+
         // Patrón de vibración: vibrar 200ms, pausa 100ms, vibrar 200ms
         const success = navigator.vibrate([200, 100, 200]);
         console.log('[Vibration] Vibration result:', success);
-        
+
         // Fallback: si el patrón no funciona, intentar vibración simple
         if (!success) {
           console.log('[Vibration] Pattern failed, trying simple vibration');
@@ -242,15 +245,23 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const refresh = useCallback(async (pIdToUse?: string) => {
     const finalPlayerId = pIdToUse || playerId;
     if (!finalPlayerId) return;
-    
+    const refreshToken = ++refreshTokenRef.current;
+
     try {
-      // Timeout más conservador para Vercel con headers específicos
+      // Abort previous request if exists
+      if (refreshAbortControllerRef.current) {
+        refreshAbortControllerRef.current.abort();
+      }
+
       const controller = new AbortController();
+      refreshAbortControllerRef.current = controller;
+
+      // Timeout más conservador para Vercel con headers específicos
       const timeoutId = setTimeout(() => controller.abort(), 10000);
-      
+
       console.log(`[Refresh] Fetching state for player: ${finalPlayerId}`);
-      
-      const res = await fetch(`/api/game/${code}/state?pid=${finalPlayerId}`, {
+
+      const res = await fetch(`/api/game/${code}/state?pid=${finalPlayerId}&_t=${Date.now()}`, {
         signal: controller.signal,
         cache: 'no-store', // Evitar cache en Vercel
         headers: {
@@ -258,9 +269,13 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           'Pragma': 'no-cache'
         }
       });
-      
+
       clearTimeout(timeoutId);
-      
+      // If we are here, the request finished. Clear the ref if it's still us.
+      if (refreshAbortControllerRef.current === controller) {
+        refreshAbortControllerRef.current = null;
+      }
+
       if (res.status === 404) {
         console.log('[Refresh] Game not found (404), redirecting to home');
         // Sala cerrada o no existe: limpiar completamente y redirigir
@@ -273,19 +288,19 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         }
         return;
       }
-      
+
       if (res.ok) {
         const data = await res.json();
-        console.log('[Refresh] Received data:', { 
-          hasGame: !!data?.game, 
-          hasPlayer: !!data?.player, 
-          playerName: data?.player?.name 
+        console.log('[Refresh] Received data:', {
+          hasGame: !!data?.game,
+          hasPlayer: !!data?.player,
+          playerName: data?.player?.name
         });
-        
+
         // Detectar pérdida de sesión
         if (detectSessionLoss(data, finalPlayerId)) {
           console.warn('[Refresh] Session loss detected');
-          
+
           // Intentar recuperación automática para Safari
           if (isSafari()) {
             const recoveredId = await safariRecovery(code, finalPlayerId);
@@ -297,7 +312,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               return;
             }
           }
-          
+
           // Si no se puede recuperar, limpiar y redirigir
           console.log('[Refresh] Cannot recover session, redirecting to home');
           sessionStorage.clear();
@@ -312,11 +327,14 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           }
           return;
         }
-        
+
         // Verificar integridad completa de los datos
         if (data && data.game && data.player && data.player.name) {
           // Guardar nombre del jugador para posible recuperación
           sessionStorage.setItem('playerName', data.player.name);
+          if (refreshToken !== refreshTokenRef.current) {
+            return;
+          }
           setState(data);
         } else {
           console.warn('[Refresh] Incomplete data received, structure check failed');
@@ -337,7 +355,8 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        console.warn('[Refresh] Request timeout, retrying...');
+        console.log('[Refresh] Request aborted/cancelled (new request started or timeout)');
+        return; // Do not retry aborted requests
       } else {
         console.warn('[Refresh] Network error:', error);
       }
@@ -357,7 +376,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       // Check URL parameter first, then fall back to persistent system
       const urlPid = readPlayerIdClient();
       const pid = urlPid || PlayerSession.getPlayerId();
-      
+
       // Check if player has an active game first
       const checkActiveGame = async () => {
         try {
@@ -378,7 +397,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         } catch (error) {
           console.error('Error checking player status:', error);
         }
-        
+
         // Continue with normal validation if no active game
         try {
           const res = await fetch(`/api/game/${code}/state?pid=${pid}`);
@@ -391,7 +410,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               setPlayerId(pid);
             } else {
               console.warn('[Init] Session validation failed, attempting recovery');
-              
+
               // Intentar recuperación para Safari
               if (isSafari()) {
                 const recoveredId = await safariRecovery(code, pid);
@@ -402,7 +421,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                   return;
                 }
               }
-              
+
               // Si no se puede recuperar, limpiar sesión y dejar que auto-join actúe si hay nombre
               console.log('[Init] Cannot recover, clearing session and retrying auto-join if name exists');
               sessionStorage.clear();
@@ -412,7 +431,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
             }
           } else {
             console.warn('[Init] Invalid playerId, attempting recovery');
-            
+
             // Intentar recuperación para Safari
             if (isSafari()) {
               const recoveredId = await safariRecovery(code, pid);
@@ -423,7 +442,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                 return;
               }
             }
-            
+
             // Si no se puede recuperar, limpiar session y permitir auto-join
             sessionStorage.clear();
             setPlayerId(undefined);
@@ -432,7 +451,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           }
         } catch (error) {
           console.warn('[Init] Network error, attempting recovery');
-          
+
           // Intentar recuperación para Safari
           if (isSafari()) {
             const recoveredId = await safariRecovery(code, pid);
@@ -443,7 +462,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               return;
             }
           }
-          
+
           // En caso de error de red, limpiar session y reintentar auto-join si hay nombre
           sessionStorage.clear();
           setPlayerId(undefined);
@@ -451,7 +470,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
           setAutoJoining(false);
         }
       };
-      
+
       checkActiveGame().finally(() => {
         setInitializing(false);
       });
@@ -538,7 +557,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       setHasVibratedForWord(false);
       setIsSubmitting(false); // Reset submitting state when new round is confirmed
       setSubmittingAction(null);
-      
+
       // Mostrar controles después de 4.8 segundos
       setTimeout(() => {
         setShowControls(true);
@@ -550,20 +569,20 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     setJoining(true); setError(null);
     try {
       const currentPlayerId = PlayerSession.getPlayerId();
-      
+
       // Save player name for future sessions
       PlayerSession.savePlayerName(name);
-      
-      const res = await fetch(`/api/game/${code}/join`, { 
-        method: 'POST', 
-        body: JSON.stringify({ 
+
+      const res = await fetch(`/api/game/${code}/join`, {
+        method: 'POST',
+        body: JSON.stringify({
           playerId: currentPlayerId,
-          name 
-        }) 
+          name
+        })
       });
       if (!res.ok) throw new Error('No se pudo unir');
       const data = await res.json();
-      
+
       // Verificar que la respuesta tenga los datos esperados
       if (data && data.playerId) {
         sessionStorage.setItem('playerId', data.playerId);
@@ -574,10 +593,10 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       } else {
         throw new Error('Respuesta inválida del servidor');
       }
-    } catch (e:any) { 
+    } catch (e: any) {
       setError(e.message);
-    } finally { 
-      setJoining(false); 
+    } finally {
+      setJoining(false);
       setAutoJoining(false);
     }
   }, [code, name, refresh]);
@@ -600,7 +619,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
         console.log('[Turn] It is now my turn, triggering vibration');
         vibrateOnTurn();
       }
-      
+
       // Actualizar el estado anterior
       setWasMyTurnPreviously(state.isMyTurn);
     }
@@ -625,14 +644,14 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     setIsSubmitting(true);
     setSubmittingAction('start');
     try {
-        await fetch(`/api/game/${code}/start-round`, { method: 'POST' });
-        // On success, Pusher will trigger a refresh. The useEffect that detects 
-        // a new round will be responsible for setting isSubmitting to false.
+      await fetch(`/api/game/${code}/start-round`, { method: 'POST' });
+      // On success, Pusher will trigger a refresh. The useEffect that detects 
+      // a new round will be responsible for setting isSubmitting to false.
     } catch (error) {
-        console.error('Failed to start round:', error);
-        setIsSubmitting(false); // Reset on error
-        setSubmittingAction(null);
-        refresh(); // Fetch true state on error
+      console.error('Failed to start round:', error);
+      setIsSubmitting(false); // Reset on error
+      setSubmittingAction(null);
+      refresh(); // Fetch true state on error
     }
   }
   async function nextRound() {
@@ -640,64 +659,85 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     setIsSubmitting(true);
     setSubmittingAction('next-round');
     try {
-        await fetch(`/api/game/${code}/next-round`, { method: 'POST' });
-        // On success, Pusher will trigger a refresh.
+      await fetch(`/api/game/${code}/next-round`, { method: 'POST' });
+      // On success, Pusher will trigger a refresh.
     } catch (error) {
-        console.error('Failed to go to next round:', error);
-        setIsSubmitting(false); // Reset on error
-        setSubmittingAction(null);
-        refresh();
+      console.error('Failed to go to next round:', error);
+      setIsSubmitting(false); // Reset on error
+      setSubmittingAction(null);
+      refresh();
     }
   }
   async function nextTurn() {
-    if (!state || !state.currentTurnPlayer || isSubmitting) return;
+    if (!state || !state.currentTurnPlayer || isSubmitting || isSubmittingRef.current) return;
+
+    if (refreshAbortControllerRef.current) {
+      refreshAbortControllerRef.current.abort();
+      refreshAbortControllerRef.current = null;
+    }
+    refreshTokenRef.current += 1;
 
     const originalState = state;
     setIsSubmitting(true);
+    isSubmittingRef.current = true;
     setSubmittingAction('next-turn');
 
-    // Optimistic update: Set the new turn immediately on the client
+    // Optimistic update: Set the new turn immediately on the client using turnOrder
     setState(currentState => {
-        if (!currentState || !currentState.currentTurnPlayer) {
-            // Should not happen, but as a safeguard.
-            return currentState;
+      if (!currentState || !currentState.currentTurnPlayer || !currentState.game.turnOrder) {
+        return currentState;
+      }
+
+      const turnOrder = currentState.game.turnOrder;
+      // Obtenemos el índice actual basado en el currentTurnIndex del estado, 
+      // o buscamos el jugador actual en el array de turnos como fallback
+      let currentTurnIndex = currentState.game.currentTurnIndex;
+
+      if (currentTurnIndex === undefined) {
+        currentTurnIndex = turnOrder.findIndex(id => id === currentState.currentTurnPlayer!.id);
+      }
+
+      if (currentTurnIndex === -1) {
+        return currentState;
+      }
+
+      const nextTurnIndex = (currentTurnIndex + 1) % turnOrder.length;
+      const nextPlayerId = turnOrder[nextTurnIndex];
+      const nextPlayer = currentState.game.players.find(p => p.id === nextPlayerId);
+
+      if (!nextPlayer) {
+        return currentState;
+      }
+
+      const newState = {
+        ...currentState,
+        currentTurnPlayer: nextPlayer,
+        isMyTurn: nextPlayer.id === playerId,
+        game: {
+          ...currentState.game,
+          currentTurnIndex: nextTurnIndex
         }
-
-        const players = currentState.game.players;
-        const currentPlayerIndex = players.findIndex(p => p.id === currentState.currentTurnPlayer!.id);
-
-        if (currentPlayerIndex === -1) {
-            // Player not found, something is wrong, cancel optimistic update.
-            return currentState;
-        }
-
-        const nextPlayerIndex = (currentPlayerIndex + 1) % players.length;
-        const nextPlayer = players[nextPlayerIndex];
-        
-        const newState = {
-            ...currentState,
-            currentTurnPlayer: nextPlayer,
-            isMyTurn: nextPlayer.id === playerId,
-        };
-        console.log('[Optimistic] New turn for:', nextPlayer.name);
-        return newState;
+      };
+      console.log('[Optimistic] New turn for:', nextPlayer.name);
+      return newState;
     });
 
     try {
-        const res = await fetch(`/api/game/${code}/next-turn`, { method: 'POST' });
-        if (!res.ok) {
-            console.warn('[Optimistic] Next turn failed on server, reverting state.');
-            setState(originalState); // Revert to pre-optimistic state on failure
-        }
-        // On success, the Pusher event will arrive with the canonical state,
-        // overwriting the optimistic one.
+      const res = await fetch(`/api/game/${code}/next-turn`, { method: 'POST' });
+      if (!res.ok) {
+        console.warn('[Optimistic] Next turn failed on server, reverting state.');
+        setState(originalState); // Revert to pre-optimistic state on failure
+      }
+      // On success, the Pusher event will arrive with the canonical state,
+      // overwriting the optimistic one.
     } catch (error) {
-        console.error('Error during next turn:', error);
-        setState(originalState); // Revert on network error
+      console.error('Error during next turn:', error);
+      setState(originalState); // Revert on network error
     } finally {
-        // The submitting state can be safely turned off.
-        setIsSubmitting(false);
-        setSubmittingAction(null);
+      // The submitting state can be safely turned off.
+      setIsSubmitting(false);
+      isSubmittingRef.current = false;
+      setSubmittingAction(null);
     }
   }
   async function closeGame() {
@@ -766,6 +806,12 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       return;
     }
 
+    if (refreshAbortControllerRef.current) {
+      refreshAbortControllerRef.current.abort();
+      refreshAbortControllerRef.current = null;
+    }
+    refreshTokenRef.current += 1;
+
     const originalState = state;
     setIsKicking(true);
 
@@ -816,7 +862,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
   const isRoundActive = !!state?.round;
   const wordVisible = isRoundActive ? (state?.wordForPlayer === null ? 'Eres el IMPOSTOR' : state?.wordForPlayer) : null;
-  
+
   // Mostrar categoría si está disponible
   const categoryVisible = state?.categoryForPlayer;
   const categoryInfo = categoryVisible ? CATEGORY_DISPLAY_INFO[categoryVisible as keyof typeof CATEGORY_DISPLAY_INFO] : null;
@@ -922,13 +968,13 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               👋 Unirte
             </Typography>
             <Stack direction="row" spacing={2} justifyContent="center" alignItems="center" sx={{ mb: 2 }}>
-              <TextField 
-                value={name} 
-                onChange={e=>setName(e.target.value)} 
-                placeholder="Tu nombre" 
-                label="Tu nombre" 
-                inputProps={{ maxLength: 30 }} 
-                size="medium" 
+              <TextField
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="Tu nombre"
+                label="Tu nombre"
+                inputProps={{ maxLength: 30 }}
+                size="medium"
                 sx={{ flex: 1 }}
                 onKeyPress={(e) => {
                   if (e.key === 'Enter' && name && !joining) {
@@ -1045,16 +1091,16 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               {/* Start Round Button / Waiting Message */}
               {state.isHost ? (
                 <Stack>
-                    <Button
-                      variant="contained"
-                      color="primary"
-                      size="large"
-                      sx={{ fontSize: 20, px: 4, py: 1.5, borderRadius: 3 }}
-                      onClick={startRound}
-                      disabled={state.game.players.length < 3 || isSubmitting || isKicking}
-                    >
-                      {submittingAction === 'start' ? '⏳ Iniciando...' : '🎯 Iniciar Partida'}
-                    </Button>
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    size="large"
+                    sx={{ fontSize: 20, px: 4, py: 1.5, borderRadius: 3 }}
+                    onClick={startRound}
+                    disabled={state.game.players.length < 3 || isSubmitting || isKicking}
+                  >
+                    {submittingAction === 'start' ? '⏳ Iniciando...' : '🎯 Iniciar Partida'}
+                  </Button>
                   {state.game.players.length < 3 && (
                     <Typography variant="caption" sx={{ color: '#e64a19', mt: 1 }}>
                       Se necesitan al menos 3 jugadores para iniciar la partida.
@@ -1200,7 +1246,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
             disabled={isSubmitting}
           >
             {isSubmitting ? '⏳...' : 'Siguiente jugador'}
-          </Button>          
+          </Button>
         </Card>
       )}
 
@@ -1212,7 +1258,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                 <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 1 }}>
                   🎯 Palabra
                 </Typography>
-                
+
                 <Box sx={{
                   position: 'relative',
                   p: 2,
@@ -1312,16 +1358,16 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
             {/* Next turn controls - appear after turn info */}
             {isRoundActive && state.isHost && !wordRevealing && showControls && (
-                <Button
-                  variant="contained"
-                  color="primary"
-                  size="large"
-                  sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%', mt: 3 }}
-                  onClick={nextRound}
-                  disabled={isSubmitting}
-                >
-                  {isSubmitting ? '⏳...' : 'Siguiente palabra'}
-                </Button>
+              <Button
+                variant="contained"
+                color="primary"
+                size="large"
+                sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%', mt: 3 }}
+                onClick={nextRound}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? '⏳...' : 'Siguiente palabra'}
+              </Button>
             )}
           </Box>
         </Card>
