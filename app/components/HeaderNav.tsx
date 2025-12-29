@@ -36,6 +36,7 @@ export default function HeaderNav() {
   const [showIOSInstructions, setShowIOSInstructions] = useState(false);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDeviceInfo(getDeviceInfo());
     setIsInstalled(getInstalledState());
   }, []);
