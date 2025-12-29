@@ -2,7 +2,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import Pusher from 'pusher-js';
 import { PlayerState } from '../../../lib/types';
-import { Box, Button, Card, Typography, TextField, Chip, Stack, Divider, List, ListItem, ListItemText } from '@mui/material';
+import { Box, Button, Card, Typography, TextField, Chip, Stack, Divider, List, ListItem, ListItemText, IconButton } from '@mui/material';
+import { Visibility, VisibilityOff, ContentCopy, Check } from '@mui/icons-material';
 import { useConnection } from '../../contexts/ConnectionContext';
 import { CATEGORY_DISPLAY_INFO } from '../../../lib/words';
 import { PlayerSession } from '../../../lib/player-session';
@@ -105,12 +106,47 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [submittingAction, setSubmittingAction] = useState<string | null>(null);
   const [isKicking, setIsKicking] = useState(false);
   const [impostorNotice, setImpostorNotice] = useState<{ text: string; tone: 'info' | 'success' } | null>(null);
+  const [wordHidden, setWordHidden] = useState(false);
+  const [copied, setCopied] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const isSubmittingRef = useRef(false);
   const refreshAbortControllerRef = useRef<AbortController | null>(null);
   const refreshTokenRef = useRef(0);
   const hasInitializedNameRef = useRef(false);
   const impostorNoticeTimeoutRef = useRef<number | null>(null);
+
+  const handleCopy = useCallback(() => {
+    const url = window.location.origin + window.location.pathname;
+    
+    const copyToClipboard = async () => {
+      // Intentar usar la API moderna
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        // Fallback para contextos no seguros o navegadores antiguos
+        const textArea = document.createElement("textarea");
+        textArea.value = url;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        textArea.style.top = "0";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          document.execCommand('copy');
+        } finally {
+          document.body.removeChild(textArea);
+        }
+      }
+    };
+
+    copyToClipboard().then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      alert('No se pudo copiar el link automáticamente. URL: ' + url);
+    });
+  }, []);
 
   const playHapticFallback = useCallback(() => {
     try {
@@ -582,6 +618,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       setHasVibratedForWord(false);
       setIsSubmitting(false); // Reset submitting state when new round is confirmed
       setSubmittingAction(null);
+      setWordHidden(false);
 
       // Mostrar controles después de 4.8 segundos
       setTimeout(() => {
@@ -958,66 +995,23 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#fbe9e7', p: { xs: 1, sm: 2 }, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
-        <Typography variant="h4" sx={{ fontWeight: 700, color: '#e64a19' }}>
-          {code}
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
+          <Typography variant="h4" sx={{ fontWeight: 700, color: '#e64a19' }}>
+            {code}
+          </Typography>
+          <IconButton 
+            onClick={handleCopy}
+            size="small"
+            sx={{ color: '#e64a19' }}
+            disabled={isSubmitting}
+          >
+            {copied ? <Check fontSize="small" /> : <ContentCopy fontSize="small" />}
+          </IconButton>
+        </Box>
         <Typography sx={{ color: '#9e9e9e', mt: 0.5, fontSize: 14, textAlign: 'center' }}>
           Comparte este código con los demás para que se unan.
         </Typography>
       </Card>
-
-      {!showRecoveringState && (
-        <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
-          <Stack direction="row" justifyContent="center" flexWrap="wrap" sx={{ columnGap: 1.5, rowGap: 1.25 }}>
-            <Button
-              variant="outlined"
-              size="medium"
-              onClick={() => {
-                const url = window.location.origin + window.location.pathname;
-                navigator.clipboard.writeText(url).then(() => {
-                  const btn = document.querySelector('[data-copy-link-btn="true"]') as HTMLElement;
-                  if (btn) {
-                    const originalText = btn.textContent;
-                    btn.textContent = '✅ Copiado!';
-                    setTimeout(() => {
-                      btn.textContent = originalText;
-                    }, 1500);
-                  }
-                }).catch(() => {
-                  alert('No se pudo copiar el link. URL: ' + url);
-                });
-              }}
-              sx={{
-                fontSize: 14,
-                px: 2.5,
-                py: 1.1,
-                borderRadius: 2,
-                bgcolor: '#fff',
-                borderColor: '#1976d2',
-                color: '#1976d2',
-                '&:hover': { bgcolor: '#e3f2fd', borderColor: '#1565c0' }
-              }}
-              data-copy-link-btn="true"
-              disabled={isSubmitting}
-            >
-              📋 Copiar
-            </Button>
-
-            {state?.isHost && (
-              <Button
-                variant="outlined"
-                color="error"
-                size="medium"
-                sx={{ fontSize: 14, px: 2.5, py: 1.1, borderRadius: 2, bgcolor: '#ffeaea' }}
-                onClick={closeGame}
-                disabled={isSubmitting}
-              >
-                {submittingAction === 'close' ? '⏳ Finalizando...' : '🏁 Finalizar'}
-              </Button>
-            )}
-          </Stack>
-        </Card>
-      )}
 
       {showJoinForm && (
         <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'center', bgcolor: '#ffccbc' }}>
@@ -1146,9 +1140,9 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
               <Divider />
 
-              {/* Start Round Button / Waiting Message */}
+              {/* Start Round Button / Waiting Message / Close Game */}
               {state.isHost ? (
-                <Stack>
+                <Stack spacing={1.5}>
                   <Button
                     variant="contained"
                     color="primary"
@@ -1159,6 +1153,18 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                   >
                     {submittingAction === 'start' ? '⏳ Iniciando...' : '🎯 Iniciar Partida'}
                   </Button>
+
+                  <Button
+                    variant="contained"
+                    color="error"
+                    size="large"
+                    sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%' }}
+                    onClick={closeGame}
+                    disabled={isSubmitting}
+                  >
+                    {submittingAction === 'close' ? '⏳ Finalizando...' : '🏁 Finalizar Partida'}
+                  </Button>
+
                   {state.game.players.length < minPlayersToStart && (
                     <Typography variant="caption" sx={{ color: '#e64a19', mt: 1 }}>
                       Se necesitan al menos {minPlayersToStart} jugadores para iniciar la partida.
@@ -1174,185 +1180,62 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       )}
 
       {showActiveRound && (
-        <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'left', bgcolor: '#ffccbc' }}>
-          <Box>
+        <>
+          {/* Card 1: Ronda Actual */}
+          <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'left', bgcolor: '#ffccbc' }}>
             <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 2 }}>
-              🧑‍🤝‍🧑 Jugadores
+              🎮 Ronda Actual
             </Typography>
-            {impostorNotice && (
-              <Box
-                sx={{
-                  mb: 2,
-                  p: 1.5,
-                  borderRadius: 2,
-                  border: '1px solid',
-                  borderColor: impostorNotice.tone === 'success' ? '#4caf50' : '#90caf9',
-                  bgcolor: impostorNotice.tone === 'success' ? '#e8f5e8' : '#e3f2fd'
-                }}
-              >
-                <Typography sx={{ color: impostorNotice.tone === 'success' ? '#2e7d32' : '#1565c0', fontSize: 14, textAlign: 'center' }}>
-                  {impostorNotice.text}
-                </Typography>
-              </Box>
-            )}
 
-            <Box
-              sx={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(2, 1fr)',
-                columnGap: 1.5,
-                gap: 1,
-                width: '100%',
-                mb: 2,
-                alignItems: 'center'
-              }}
-            >
-              {state.game.players.map(p => (
-                <Box key={p.id} sx={{ position: 'relative', display: 'flex', justifyContent: 'center', width: '100%' }}>
-                  <Chip
-                    label={p.name}
-                    color={p.id === playerId ? 'primary' : 'default'}
-                    sx={{ fontSize: 14, px: 1.25, width: '100%', justifyContent: 'center' }}
-                  />
-                  {p.id === playerId ? (
-                    <Button
-                      size="small"
-                      onClick={() => {
-                        if (!confirm('¿Está seguro que deseas abandonar la partida?')) return;
-                        leaveGame();
-                      }}
-                      disabled={isSubmitting}
-                      sx={{
-                        position: 'absolute',
-                        top: -8,
-                        right: -8,
-                        minWidth: 20,
-                        width: 20,
-                        height: 20,
-                        borderRadius: '50%',
-                        bgcolor: '#f44336',
-                        color: 'white',
-                        fontSize: 16,
-                        fontWeight: 'bold',
-                        p: 0,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        '&:hover': {
-                          bgcolor: '#d32f2f'
-                        },
-                        zIndex: 1
-                      }}
-                    >
-                      ×
-                    </Button>
-                  ) : ((allowAllKick && p.id !== playerId) || (!allowAllKick && state.isHost && p.id !== playerId)) && (
-                    <Button
-                      size="small"
-                      onClick={() => kickPlayer(p.id, p.name)}
-                      disabled={isSubmitting || isKicking}
-                      sx={{
-                        position: 'absolute',
-                        top: -8,
-                        right: -8,
-                        minWidth: 20,
-                        width: 20,
-                        height: 20,
-                        borderRadius: '50%',
-                        bgcolor: '#f44336',
-                        color: 'white',
-                        fontSize: 16,
-                        fontWeight: 'bold',
-                        p: 0,
-                        '&:hover': {
-                          bgcolor: '#d32f2f'
-                        },
-                        zIndex: 1
-                      }}
-                    >
-                      ×
-                    </Button>
-                  )}
-                </Box>
-              ))}
-            </Box>
-
-            <Divider sx={{ my: 2 }} />
-
-            {/* Turn indicator - appears after word reading time */}
+            {/* Turn Indicator & Next Player Button */}
             {isRoundActive && state.currentTurnPlayer && (
-              <Box sx={{
-                mb: 2,
-                p: 2,
-                bgcolor: '#e8f5e8',
-                borderRadius: 2,
-                border: '2px solid #4caf50',
-                animation: 'slideInFromTop 0.8s ease-out both',
-                '@keyframes slideInFromTop': {
-                  '0%': {
-                    opacity: 0,
-                    transform: 'translateY(-30px)',
-                    maxHeight: '0px',
-                    padding: '0 16px',
-                    marginBottom: '0px'
-                  },
-                  '100%': {
-                    opacity: 1,
-                    transform: 'translateY(0)',
-                    maxHeight: '200px',
-                    padding: '16px',
-                    marginBottom: '16px'
+              <Box sx={{ mb: 2 }}>
+                <Box sx={{
+                  p: 2,
+                  bgcolor: '#e8f5e8',
+                  borderRadius: 2,
+                  border: '2px solid #4caf50',
+                  animation: 'slideInFromTop 0.8s ease-out both',
+                  '@keyframes slideInFromTop': {
+                    '0%': {
+                      opacity: 0,
+                      transform: 'translateY(-30px)',
+                      maxHeight: '0px',
+                      padding: '0 16px',
+                      marginBottom: '0px'
+                    },
+                    '100%': {
+                      opacity: 1,
+                      transform: 'translateY(0)',
+                      maxHeight: '200px',
+                      padding: '16px',
+                      marginBottom: '0px'
+                    }
                   }
-                }
-              }}>
-                <Typography variant="h6" sx={{ color: '#2e7d32', textAlign: 'center' }}>
-                  {state.isMyTurn ? (<span>🫵 <strong>¡Es tu turno!</strong></span>) : (<span>👉 Turno de: <strong>{state.currentTurnPlayer.name}</strong></span>)}
-                </Typography>
+                }}>
+                  <Typography variant="h6" sx={{ color: '#2e7d32', textAlign: 'center' }}>
+                    {state.isMyTurn ? (<span>🫵 <strong>¡Es tu turno!</strong></span>) : (<span>👉 Turno de: <strong>{state.currentTurnPlayer.name}</strong></span>)}
+                  </Typography>
+                </Box>
+
+                {state.isHost && (
+                  <Button
+                    variant="contained"
+                    color="success"
+                    size="large"
+                    sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%', mt: 0.5 }}
+                    onClick={nextTurn}
+                    disabled={isSubmitting}
+                  >
+                    {submittingAction === 'next-turn' && isSubmitting ? '⏳...' : 'Siguiente jugador'}
+                  </Button>
+                )}
               </Box>
             )}
-          </Box>
-          {state.isHost ? (
-            <Stack spacing={1} sx={{ mt: 1 }}>
-              <Button
-                variant="contained"
-                color="success"
-                size="large"
-                sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%' }}
-                onClick={nextTurn}
-                disabled={isSubmitting}
-              >
-                {submittingAction === 'next-turn' && isSubmitting ? '?...' : 'Siguiente jugador'}
-              </Button>
-              {showImpostorButton && (
-                <Button
-                  variant="contained"
-                  color="warning"
-                  size="large"
-                  sx={{ fontSize: 18, px: 3, py: 1.4, borderRadius: 3, width: '100%' }}
-                  onClick={reportImpostorFound}
-                  disabled={isSubmitting}
-                >
-                  {submittingAction === 'impostor-found' && isSubmitting ? '?...' : 'Impostor encontrado'}
-                </Button>
-              )}
-            </Stack>
-          ) : (
-            <Typography sx={{ color: '#616161', textAlign: 'center', mt: 1 }}>
-              Esperando que el host pase de turno...
-            </Typography>
-          )}
-        </Card>
-      )}
 
-      {showActiveRound && (
-        <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, bgcolor: '#ffccbc' }}>
-          <Box>
-            {isRoundActive && (
-              <Box>
-                <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 1 }}>
-                  🎯 Palabra
-                </Typography>
-
+            {/* Word Display */}
+            <Box>
+              {isRoundActive && (
                 <Box sx={{
                   position: 'relative',
                   p: 2,
@@ -1370,13 +1253,12 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                   justifyContent: 'center',
                   overflow: 'hidden'
                 }}>
-                  {/* Categoría en esquina inferior derecha - solo visible cuando no hay countdown */}
                   {categoryInfo && !wordRevealing && (
                     <Box sx={{
                       position: 'absolute',
                       bottom: 4,
                       right: 4,
-                      fontSize: 10,
+                      fontSize: 14,
                       fontWeight: 500,
                       color: '#e65100',
                       bgcolor: '#fff3e0',
@@ -1390,8 +1272,25 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                       {categoryInfo.name}
                     </Box>
                   )}
+
+                  {!wordRevealing && (
+                    <IconButton
+                      onClick={() => setWordHidden(!wordHidden)}
+                      size="small"
+                      sx={{
+                        position: 'absolute',
+                        top: 4,
+                        right: 4,
+                        color: '#1976d2',
+                        bgcolor: 'rgba(255, 255, 255, 0.5)',
+                        '&:hover': { bgcolor: 'rgba(255, 255, 255, 0.8)' }
+                      }}
+                    >
+                      {wordHidden ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
+                    </IconButton>
+                  )}
+
                   {wordRevealing ? (
-                    // Contador y animación de revelado
                     <Box sx={{
                       position: 'relative',
                       width: '100%',
@@ -1436,35 +1335,173 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                             }
                           }
                         }}>
-                          {wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...'}
+                          {wordHidden ? '••••••••' : (wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...')}
                         </Box>
                       )}
                     </Box>
                   ) : (
-                    // Palabra visible normalmente
                     <Box sx={{ width: '100%', textAlign: 'center' }}>
-                      {wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...'}
+                      {wordHidden ? '••••••••' : (wordVisible === 'Eres el IMPOSTOR' ? '🎭 Eres el IMPOSTOR' : wordVisible ?? '...')}
                     </Box>
                   )}
                 </Box>
-              </Box>
-            )}
+              )}
 
-            {/* Next turn controls - appear after turn info */}
-            {isRoundActive && state.isHost && !wordRevealing && showControls && (
-              <Button
-                variant="contained"
-                color="primary"
-                size="large"
-                sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%', mt: 3 }}
-                onClick={nextRound}
-                disabled={isSubmitting}
+              {/* Next word button */}
+              {state.isHost && isRoundActive && !wordRevealing && showControls && (
+                <>
+                  {impostorNotice && (
+                    <Box
+                      sx={{
+                        mt: 2,
+                        mb: 1,
+                        p: 1.5,
+                        borderRadius: 2,
+                        border: '1px solid',
+                        borderColor: impostorNotice.tone === 'success' ? '#4caf50' : '#90caf9',
+                        bgcolor: impostorNotice.tone === 'success' ? '#e8f5e8' : '#e3f2fd',
+                        animation: 'fadeIn 0.5s ease-out',
+                        '@keyframes fadeIn': {
+                          '0%': { opacity: 0, transform: 'translateY(-10px)' },
+                          '100%': { opacity: 1, transform: 'translateY(0)' }
+                        }
+                      }}
+                    >
+                      <Typography sx={{ color: impostorNotice.tone === 'success' ? '#2e7d32' : '#1565c0', fontSize: 14, textAlign: 'center', fontWeight: 'bold' }}>
+                        {impostorNotice.text}
+                      </Typography>
+                    </Box>
+                  )}
+                  <Stack direction="row" spacing={1} sx={{ mt: 0.5, width: '100%' }}>
+                    {showImpostorButton && (
+                      <Button
+                        variant="contained"
+                        color="warning"
+                        size="large"
+                        sx={{ fontSize: 16, px: 2, py: 1.5, borderRadius: 3, flex: 1, lineHeight: 1.2 }}
+                        onClick={reportImpostorFound}
+                        disabled={isSubmitting}
+                      >
+                        {submittingAction === 'impostor-found' && isSubmitting ? '⏳...' : '¡Impostor!'}
+                      </Button>
+                    )}
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      size="large"
+                      sx={{ fontSize: 16, px: 2, py: 1.5, borderRadius: 3, flex: 1, lineHeight: 1.2 }}
+                      onClick={nextRound}
+                      disabled={isSubmitting}
+                    >
+                      {isSubmitting ? '⏳...' : 'Siguiente palabra'}
+                    </Button>
+                  </Stack>
+                </>
+              )}
+            </Box>
+          </Card>
+
+          {/* Card 2: Jugadores */}
+          <Card sx={{ maxWidth: 430, width: '100%', mb: 2, p: { xs: 2, sm: 3 }, boxShadow: 4, textAlign: 'left', bgcolor: '#ffccbc' }}>
+            <Box>
+              <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 2 }}>
+                🧑‍🤝‍🧑 Jugadores
+              </Typography>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  columnGap: 1.5,
+                  gap: 1,
+                  width: '100%',
+                  alignItems: 'center'
+                }}
               >
-                {isSubmitting ? '⏳...' : 'Siguiente palabra'}
-              </Button>
-            )}
-          </Box>
-        </Card>
+                {state.game.players.map(p => (
+                  <Box key={p.id} sx={{ position: 'relative', display: 'flex', justifyContent: 'center', width: '100%' }}>
+                    <Chip
+                      label={p.name}
+                      color={p.id === playerId ? 'primary' : 'default'}
+                      sx={{ fontSize: 14, px: 1.25, width: '100%', justifyContent: 'center' }}
+                    />
+                    {p.id === playerId ? (
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          if (!confirm('¿Está seguro que deseas abandonar la partida?')) return;
+                          leaveGame();
+                        }}
+                        disabled={isSubmitting}
+                        sx={{
+                          position: 'absolute',
+                          top: -8,
+                          right: -8,
+                          minWidth: 20,
+                          width: 20,
+                          height: 20,
+                          borderRadius: '50%',
+                          bgcolor: '#f44336',
+                          color: 'white',
+                          fontSize: 16,
+                          fontWeight: 'bold',
+                          p: 0,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          '&:hover': {
+                            bgcolor: '#d32f2f'
+                          },
+                          zIndex: 1
+                        }}
+                      >
+                        ×
+                      </Button>
+                    ) : ((allowAllKick && p.id !== playerId) || (!allowAllKick && state.isHost && p.id !== playerId)) && (
+                      <Button
+                        size="small"
+                        onClick={() => kickPlayer(p.id, p.name)}
+                        disabled={isSubmitting || isKicking}
+                        sx={{
+                          position: 'absolute',
+                          top: -8,
+                          right: -8,
+                          minWidth: 20,
+                          width: 20,
+                          height: 20,
+                          borderRadius: '50%',
+                          bgcolor: '#f44336',
+                          color: 'white',
+                          fontSize: 16,
+                          fontWeight: 'bold',
+                          p: 0,
+                          '&:hover': {
+                            bgcolor: '#d32f2f'
+                          },
+                          zIndex: 1
+                        }}
+                      >
+                        ×
+                      </Button>
+                    )}
+                  </Box>
+                ))}
+              </Box>
+
+              {state.isHost && (
+                <Button
+                  variant="contained"
+                  color="error"
+                  size="large"
+                  sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%', mt: 2 }}
+                  onClick={closeGame}
+                  disabled={isSubmitting}
+                >
+                  {submittingAction === 'close' ? '⏳ Finalizando...' : '🏁 Finalizar Partida'}
+                </Button>
+              )}
+            </Box>
+          </Card>
+        </>
       )}
       {!isRoundActive && !showRecoveringState && (
         <Card sx={{ maxWidth: 430, width: '100%', p: { xs: 2, sm: 3 }, boxShadow: 2, textAlign: 'left', bgcolor: '#fff', mb: 2 }}>

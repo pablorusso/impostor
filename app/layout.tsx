@@ -69,7 +69,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body style={{fontFamily:'system-ui, -apple-system, Segoe UI, Roboto, sans-serif', backgroundColor:'#fbe9e7', margin:0, minHeight:'100vh'}}>
         <ConnectionProvider>
-          <header style={{padding:'0.75rem 1rem',borderBottom:'1px solid #ddd',marginBottom:'1rem',background:'#ffccbc', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+          <header style={{padding:'0.75rem 1rem',borderBottom:'1px solid #ddd',background:'#ffccbc', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
             <HeaderNav />
           </header>
           <main style={{maxWidth:840,margin:'0 auto',padding:'0 1rem'}}>{children}</main>
