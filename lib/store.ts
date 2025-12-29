@@ -56,7 +56,61 @@ function getStore(): Store {
   return store;
 }
 
-export function createGame(hostName: string, words?: string[], shareCategories?: boolean, allowAllKick: boolean = true, isPublic: boolean = false): { code: string; hostId: string; playerId: string } {
+const DEFAULT_IMPOSTOR_MIN = 1;
+const DEFAULT_IMPOSTOR_MAX = 1;
+
+function getImpostorLimits(game: Game) {
+  const rawMin = Number(game.impostorCountMin);
+  const rawMax = Number(game.impostorCountMax);
+  const min = Number.isFinite(rawMin) ? Math.max(1, Math.floor(rawMin)) : DEFAULT_IMPOSTOR_MIN;
+  const maxBase = Number.isFinite(rawMax) ? Math.max(1, Math.floor(rawMax)) : DEFAULT_IMPOSTOR_MAX;
+  const max = Math.max(min, maxBase);
+  return { min, max };
+}
+
+function getMinPlayersForGame(game: Game) {
+  const { max } = getImpostorLimits(game);
+  return max + 2;
+}
+
+function pickImpostorIds(players: Player[], min: number, max: number): string[] {
+  const maxPossible = Math.min(max, players.length);
+  const minPossible = Math.min(min, maxPossible);
+  if (maxPossible <= 0) return [];
+  const impostorCount = minPossible === maxPossible
+    ? minPossible
+    : Math.floor(Math.random() * (maxPossible - minPossible + 1)) + minPossible;
+  const shuffled = [...players];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled.slice(0, impostorCount).map(p => p.id);
+}
+
+function ensureImpostorIds(players: Player[], impostorIds: string[]): string[] {
+  if (impostorIds.length > 0) return impostorIds;
+  if (players.length === 0) return impostorIds;
+  const fallbackIndex = Math.floor(Math.random() * players.length);
+  return [players[fallbackIndex].id];
+}
+
+function getRoundImpostorIds(round?: Round): string[] {
+  if (!round) return [];
+  if (Array.isArray(round.impostorIds) && round.impostorIds.length > 0) return round.impostorIds;
+  if (round.impostorId) return [round.impostorId];
+  return [];
+}
+
+export function createGame(
+  hostName: string,
+  words?: string[],
+  shareCategories?: boolean,
+  allowAllKick: boolean = true,
+  isPublic: boolean = false,
+  impostorCountMin: number = DEFAULT_IMPOSTOR_MIN,
+  impostorCountMax: number = DEFAULT_IMPOSTOR_MAX
+): { code: string; hostId: string; playerId: string } {
   const store = getStore();
   const generateGameCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 5);
   let code: string;
@@ -65,11 +119,15 @@ export function createGame(hostName: string, words?: string[], shareCategories?:
   } while (store.games.has(code));
   const hostId = nanoid();
   const hostPlayer: Player = { id: hostId, name: hostName.trim() };
+  const safeImpostorMin = Math.max(1, Math.floor(impostorCountMin || DEFAULT_IMPOSTOR_MIN));
+  const safeImpostorMax = Math.max(safeImpostorMin, Math.floor(impostorCountMax || safeImpostorMin));
   const game: Game = {
     code,
     hostId,
     players: [hostPlayer],
     words: (words && words.length > 0 ? words : DEFAULT_WORDS).map((w: string) => w.trim()).filter(Boolean),
+    impostorCountMin: safeImpostorMin,
+    impostorCountMax: safeImpostorMax,
     shareCategories: shareCategories || false,
     allowAllKick,
     isPublic,
@@ -110,7 +168,9 @@ export function joinGame(code: string, name: string): { playerId: string } | nul
 export function startRound(code: string): boolean {
   const game = getStore().games.get(code.toUpperCase());
   if (!game) return false;
-  if (game.players.length < 3) return false; // mínimo
+  const minPlayers = getMinPlayersForGame(game);
+  if (game.players.length < minPlayers) return false;
+  const { min, max } = getImpostorLimits(game);
   
   // Initialize turn order if not set (first round)
   if (!game.turnOrder || game.turnOrder.length !== game.players.length) {
@@ -124,11 +184,13 @@ export function startRound(code: string): boolean {
     game.currentTurnIndex = 0;
   }
   
-  const impostorIndex = Math.floor(Math.random() * game.players.length);
-  const impostorId = game.players[impostorIndex].id;
+  const impostorIds = ensureImpostorIds(
+    game.players,
+    pickImpostorIds(game.players, min, max)
+  );
   const word = game.words[Math.floor(Math.random() * game.words.length)];
   const category = findWordCategory(word);
-  const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
+  const round: Round = { id: nanoid(), impostorIds, impostorId: impostorIds[0], word, category, startedAt: Date.now() };
   game.currentRound = round;
   getStore().publicGames.delete(code.toUpperCase());
   
@@ -138,7 +200,9 @@ export function startRound(code: string): boolean {
 export function nextRound(code: string): boolean {
   const game = getStore().games.get(code.toUpperCase());
   if (!game) return false;
-  if (game.players.length < 3) return false;
+  const minPlayers = getMinPlayersForGame(game);
+  if (game.players.length < minPlayers) return false;
+  const { min, max } = getImpostorLimits(game);
   // Marcar fin lógico de la ronda anterior si existía
   if (game.currentRound) {
     game.currentRound.endedAt = Date.now();
@@ -163,11 +227,13 @@ export function nextRound(code: string): boolean {
   }
   game.currentTurnIndex = 0;
   
-  const impostorIndex = Math.floor(Math.random() * game.players.length);
-  const impostorId = game.players[impostorIndex].id;
+  const impostorIds = ensureImpostorIds(
+    game.players,
+    pickImpostorIds(game.players, min, max)
+  );
   const word = game.words[Math.floor(Math.random() * game.words.length)];
   const category = findWordCategory(word);
-  const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
+  const round: Round = { id: nanoid(), impostorIds, impostorId: impostorIds[0], word, category, startedAt: Date.now() };
   game.currentRound = round;
   getStore().publicGames.delete(code.toUpperCase());
   return true;
@@ -190,13 +256,35 @@ export function closeGame(code: string): boolean {
   return true;
 }
 
-export function nextTurn(code: string): boolean {
+export function nextTurn(code: string, playerId?: string): boolean {
   const game = getStore().games.get(code.toUpperCase());
   if (!game || !game.currentRound || !game.turnOrder || game.currentTurnIndex === undefined) return false;
+  if (!playerId || playerId !== game.hostId) return false;
   
   // Advance to next turn, wrapping around to 0 if at end
   game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length;
   return true;
+}
+
+export function reportImpostorFound(code: string, playerId?: string): { ok: boolean; allFound?: boolean } {
+  const game = getStore().games.get(code.toUpperCase());
+  if (!game || !game.currentRound) return { ok: false };
+  if (!playerId || playerId !== game.hostId) return { ok: false };
+
+  const round = game.currentRound;
+  const totalImpostors = getRoundImpostorIds(round).length;
+  if (totalImpostors <= 0) return { ok: false };
+
+  const currentFound = Math.min(round.foundImpostorCount ?? 0, totalImpostors);
+  const nextFound = Math.min(currentFound + 1, totalImpostors);
+
+  if (nextFound >= totalImpostors) {
+    const ok = nextRound(code);
+    return { ok, allFound: ok ? true : undefined };
+  }
+
+  round.foundImpostorCount = nextFound;
+  return { ok: true, allFound: false };
 }
 
 export function leaveGame(code: string, playerId: string): { ok: boolean; gameEnded?: boolean; error?: string } {
@@ -231,8 +319,9 @@ export function leaveGame(code: string, playerId: string): { ok: boolean; gameEn
     }
   }
   
-  // Si quedan menos de 3 jugadores, terminar ronda actual
-  if (game.players.length < 3 && game.currentRound) {
+  const minPlayers = getMinPlayersForGame(game);
+  // Si quedan menos jugadores que el minimo requerido, terminar ronda actual
+  if (game.players.length < minPlayers && game.currentRound) {
     game.currentRound.endedAt = Date.now();
     game.currentRound = undefined;
     game.turnOrder = undefined;
@@ -266,7 +355,7 @@ export function getState(code: string, playerId?: string): PlayerState | null {
   let wordForPlayer: string | null | undefined = undefined;
   let categoryForPlayer: string | undefined = undefined;
   if (round && player) {
-    const isImpostor = player.id === round.impostorId;
+    const isImpostor = getRoundImpostorIds(round).includes(player.id);
     if (isImpostor) {
       // El impostor ve null para la palabra
       wordForPlayer = null;

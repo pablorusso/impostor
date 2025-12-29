@@ -167,6 +167,51 @@ const GAME_LIST_KEY = 'games:active';
 const PUBLIC_GAMES_KEY = 'games:public';
 const PLAYER_KEY = (code: string, playerId: string) => `player:${code}:${playerId}`;
 const PLAYER_GAME_MAP_KEY = (playerId: string) => `player_game:${playerId}`;
+const DEFAULT_IMPOSTOR_MIN = 1;
+const DEFAULT_IMPOSTOR_MAX = 1;
+
+function getImpostorLimits(game: Game) {
+  const rawMin = Number(game.impostorCountMin);
+  const rawMax = Number(game.impostorCountMax);
+  const min = Number.isFinite(rawMin) ? Math.max(1, Math.floor(rawMin)) : DEFAULT_IMPOSTOR_MIN;
+  const maxBase = Number.isFinite(rawMax) ? Math.max(1, Math.floor(rawMax)) : DEFAULT_IMPOSTOR_MAX;
+  const max = Math.max(min, maxBase);
+  return { min, max };
+}
+
+function getMinPlayersForGame(game: Game) {
+  const { max } = getImpostorLimits(game);
+  return max + 2;
+}
+
+function pickImpostorIds(players: Player[], min: number, max: number): string[] {
+  const maxPossible = Math.min(max, players.length);
+  const minPossible = Math.min(min, maxPossible);
+  if (maxPossible <= 0) return [];
+  const impostorCount = minPossible === maxPossible
+    ? minPossible
+    : Math.floor(Math.random() * (maxPossible - minPossible + 1)) + minPossible;
+  const shuffled = [...players];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled.slice(0, impostorCount).map(p => p.id);
+}
+
+function ensureImpostorIds(players: Player[], impostorIds: string[]): string[] {
+  if (impostorIds.length > 0) return impostorIds;
+  if (players.length === 0) return impostorIds;
+  const fallbackIndex = Math.floor(Math.random() * players.length);
+  return [players[fallbackIndex].id];
+}
+
+function getRoundImpostorIds(round?: Round): string[] {
+  if (!round) return [];
+  if (Array.isArray(round.impostorIds) && round.impostorIds.length > 0) return round.impostorIds;
+  if (round.impostorId) return [round.impostorId];
+  return [];
+}
 
 async function refreshGameActivity(game: Game, store?: ReturnType<typeof getStore>): Promise<void> {
   const activeStore = store || getStore();
@@ -311,7 +356,16 @@ async function transferHost(game: Game): Promise<void> {
 }
 
 // Crear un nuevo juego
-export async function createGame(hostPlayerId: string, hostName: string, words?: string[], shareCategories?: boolean, allowAllKick: boolean = true, isPublic: boolean = false): Promise<{ code: string; hostId: string; playerId: string }> {
+export async function createGame(
+  hostPlayerId: string,
+  hostName: string,
+  words?: string[],
+  shareCategories?: boolean,
+  allowAllKick: boolean = true,
+  isPublic: boolean = false,
+  impostorCountMin: number = DEFAULT_IMPOSTOR_MIN,
+  impostorCountMax: number = DEFAULT_IMPOSTOR_MAX
+): Promise<{ code: string; hostId: string; playerId: string }> {
   const store = getStore();
   const generateGameCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 5);
   let code: string;
@@ -322,12 +376,16 @@ export async function createGame(hostPlayerId: string, hostName: string, words?:
   } while (await store.exists(GAME_KEY(code)));
 
   const hostPlayer: Player = { id: hostPlayerId, name: hostName.trim() };
+  const safeImpostorMin = Math.max(1, Math.floor(impostorCountMin || DEFAULT_IMPOSTOR_MIN));
+  const safeImpostorMax = Math.max(safeImpostorMin, Math.floor(impostorCountMax || safeImpostorMin));
  
   const game: Game = {
     code,
     hostId: hostPlayerId,
     players: [hostPlayer],
     words: (words && words.length > 0 ? words : DEFAULT_WORDS).slice().sort(() => Math.random() - 0.5),
+    impostorCountMin: safeImpostorMin,
+    impostorCountMax: safeImpostorMax,
     shareCategories: shareCategories || false,
     allowAllKick,
     isPublic,
@@ -361,7 +419,7 @@ export async function createGame(hostPlayerId: string, hostName: string, words?:
     await setPlayerGameMapping(hostPlayerId, code);
 
     const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
-    console.log(`[${storeType}] Game created: ${code} with ${game.words.length} words, host: ${hostName} (${hostPlayerId}), shareCategories: ${shareCategories}`);
+    console.log(`[${storeType}] Game created: ${code} with ${game.words.length} words, host: ${hostName} (${hostPlayerId}), shareCategories: ${shareCategories}, impostors: ${safeImpostorMin}-${safeImpostorMax}`);
     return { code, hostId: hostPlayerId, playerId: hostPlayerId };
   } catch (error) {
     console.error('Error creating game:', error);
@@ -433,7 +491,9 @@ export async function startRound(code: string): Promise<boolean> {
   const store = getStore();
   const game = await store.get(GAME_KEY(code.toUpperCase())) as Game | null;
   if (!game) return false;
-  if (game.players.length < 2) return false;
+  const minPlayers = getMinPlayersForGame(game);
+  if (game.players.length < minPlayers) return false;
+  const { min, max } = getImpostorLimits(game);
 
   // Initialize turn order if not set (first round)
   if (!game.turnOrder || game.turnOrder.length !== game.players.length) {
@@ -447,11 +507,13 @@ export async function startRound(code: string): Promise<boolean> {
     game.currentTurnIndex = 0;
   }
 
-  const impostorIndex = Math.floor(Math.random() * game.players.length);
-  const impostorId = game.players[impostorIndex].id;
+  const impostorIds = ensureImpostorIds(
+    game.players,
+    pickImpostorIds(game.players, min, max)
+  );
   const word = game.words[Math.floor(Math.random() * game.words.length)];
   const category = findWordCategory(word);
-  const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
+  const round: Round = { id: nanoid(), impostorIds, impostorId: impostorIds[0], word, category, startedAt: Date.now() };
   
   game.currentRound = round;
   // Si era pública y no ha empezado antes, remover de la lista pública
@@ -462,7 +524,7 @@ export async function startRound(code: string): Promise<boolean> {
   await refreshGameActivity(game, store);
 
   const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
-  console.log(`[${storeType}] Round started in game ${code}: word=${word}, category=${category}, impostor=${impostorId}`);
+  console.log(`[${storeType}] Round started in game ${code}: word=${word}, category=${category}, impostors=${impostorIds.join(',')}`);
 
   return true;
 }
@@ -471,7 +533,9 @@ export async function nextRound(code: string): Promise<boolean> {
   const store = getStore();
   const game = await store.get(GAME_KEY(code.toUpperCase())) as Game | null;
   if (!game) return false;
-  if (game.players.length < 2) return false;
+  const minPlayers = getMinPlayersForGame(game);
+  if (game.players.length < minPlayers) return false;
+  const { min, max } = getImpostorLimits(game);
 
   // Marcar fin lógico de la ronda anterior si existía
   if (game.currentRound) {
@@ -495,11 +559,13 @@ export async function nextRound(code: string): Promise<boolean> {
   }
   game.currentTurnIndex = 0;
 
-  const impostorIndex = Math.floor(Math.random() * game.players.length);
-  const impostorId = game.players[impostorIndex].id;
+  const impostorIds = ensureImpostorIds(
+    game.players,
+    pickImpostorIds(game.players, min, max)
+  );
   const word = game.words[Math.floor(Math.random() * game.words.length)];
   const category = findWordCategory(word);
-  const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
+  const round: Round = { id: nanoid(), impostorIds, impostorId: impostorIds[0], word, category, startedAt: Date.now() };
   
   game.currentRound = round;
 
@@ -508,15 +574,16 @@ export async function nextRound(code: string): Promise<boolean> {
   await refreshGameActivity(game, store);
 
   const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
-  console.log(`[${storeType}] Next round started in game ${code}: word=${word}, category=${category}`);
+  console.log(`[${storeType}] Next round started in game ${code}: word=${word}, category=${category}, impostors=${impostorIds.join(',')}`);
 
   return true;
 }
 
-export async function nextTurn(code: string): Promise<boolean> {
+export async function nextTurn(code: string, playerId?: string): Promise<boolean> {
   const store = getStore();
   const game = await store.get(GAME_KEY(code.toUpperCase())) as Game | null;
   if (!game || !game.currentRound || !game.turnOrder) return false;
+  if (!playerId || playerId !== game.hostId) return false;
 
   game.currentTurnIndex = ((game.currentTurnIndex || 0) + 1) % game.turnOrder.length;
 
@@ -528,6 +595,31 @@ export async function nextTurn(code: string): Promise<boolean> {
   console.log(`[${storeType}] Next turn in game ${code}: index=${game.currentTurnIndex}`);
 
   return true;
+}
+
+export async function reportImpostorFound(code: string, playerId?: string): Promise<{ ok: boolean; allFound?: boolean }> {
+  const store = getStore();
+  const game = await store.get(GAME_KEY(code.toUpperCase())) as Game | null;
+  if (!game || !game.currentRound) return { ok: false };
+  if (!playerId || playerId !== game.hostId) return { ok: false };
+
+  const round = game.currentRound;
+  const totalImpostors = getRoundImpostorIds(round).length;
+  if (totalImpostors <= 0) return { ok: false };
+
+  const currentFound = Math.min(round.foundImpostorCount ?? 0, totalImpostors);
+  const nextFound = Math.min(currentFound + 1, totalImpostors);
+
+  if (nextFound >= totalImpostors) {
+    const ok = await nextRound(code);
+    return { ok, allFound: ok ? true : undefined };
+  }
+
+  round.foundImpostorCount = nextFound;
+  await store.set(GAME_KEY(code), game);
+  await refreshGameActivity(game, store);
+
+  return { ok: true, allFound: false };
 }
 
 export async function endRound(code: string): Promise<boolean> {
@@ -594,12 +686,13 @@ export async function leaveGame(code: string, playerId: string): Promise<boolean
   }
 
   // Verificar si había una ronda activa y el jugador que abandona es el impostor
-  const wasImpostor = game.currentRound && game.currentRound.impostorId === playerId;
+  const wasImpostor = getRoundImpostorIds(game.currentRound).includes(playerId);
   const logPrefix = isRedisAvailable() ? 'REDIS' : 'DEV';
+  const minPlayers = getMinPlayersForGame(game);
   
   // Lógica especial según número de jugadores restantes y si era impostor
-  if (game.players.length < 3) {
-    // Si quedan menos de 3 jugadores, volver al lobby (terminar ronda actual)
+  if (game.players.length < minPlayers) {
+    // Si quedan menos jugadores que el minimo requerido, volver al lobby (terminar ronda actual)
     if (game.currentRound) {
       game.currentRound.endedAt = Date.now();
       game.currentRound = undefined;
@@ -609,7 +702,7 @@ export async function leaveGame(code: string, playerId: string): Promise<boolean
       console.log(`[${logPrefix}] Round cancelled due to insufficient players in game ${code}`);
     }
   } else if (wasImpostor) {
-    // Si el impostor abandona y hay suficientes jugadores (>=3), pasar automáticamente a siguiente palabra
+    // Si el impostor abandona y hay suficientes jugadores, pasar automaticamente a siguiente palabra
     console.log(`[${logPrefix}] Impostor left game ${code}, starting next round automatically`);
     
     // Marcar fin de la ronda actual
@@ -634,17 +727,20 @@ export async function leaveGame(code: string, playerId: string): Promise<boolean
     }
     game.currentTurnIndex = 0;
 
-    // Crear nueva ronda con nuevo impostor y nueva palabra
-    const impostorIndex = Math.floor(Math.random() * game.players.length);
-    const impostorId = game.players[impostorIndex].id;
+    // Crear nueva ronda con nuevos impostores y nueva palabra
+    const { min, max } = getImpostorLimits(game);
+    const impostorIds = ensureImpostorIds(
+      game.players,
+      pickImpostorIds(game.players, min, max)
+    );
     const word = game.words[Math.floor(Math.random() * game.words.length)];
     const category = findWordCategory(word);
-    const round: Round = { id: nanoid(), impostorId, word, category, startedAt: Date.now() };
+    const round: Round = { id: nanoid(), impostorIds, impostorId: impostorIds[0], word, category, startedAt: Date.now() };
     
     game.currentRound = round;
     
     const storeType = isRedisAvailable() ? 'REDIS' : 'DEV';
-    console.log(`[${storeType}] New round auto-started after impostor left game ${code}: word=${word}, category=${category}, impostor=${impostorId}`);
+    console.log(`[${storeType}] New round auto-started after impostor left game ${code}: word=${word}, category=${category}, impostors=${impostorIds.join(',')}`);
   }
 
   // Si el host se fue, transferir host automáticamente
@@ -673,7 +769,7 @@ export async function getState(code: string, playerId?: string): Promise<PlayerS
   let categoryForPlayer: string | undefined = undefined;
 
   if (round && player) {
-    const isImpostor = player.id === round.impostorId;
+    const isImpostor = getRoundImpostorIds(round).includes(player.id);
     if (isImpostor) {
       // El impostor ve null para la palabra
       wordForPlayer = null;
