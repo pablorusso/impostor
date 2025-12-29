@@ -5,7 +5,9 @@ export interface Player {
 
 export interface Round {
   id: string;
-  impostorId: string;
+  impostorIds: string[];
+  impostorId?: string; // legacy single-impostor rounds
+  foundImpostorCount?: number;
   word: string;
   category: string;
   startedAt: number;
@@ -17,6 +19,8 @@ export interface Game {
   hostId: string;
   players: Player[];
   words: string[];
+  impostorCountMin?: number;
+  impostorCountMax?: number;
   shareCategories?: boolean; // Nueva opción: compartir categorías con el impostor
   allowAllKick?: boolean; // Nueva opción: todos pueden expulsar
   isPublic?: boolean; // Sala pública listable

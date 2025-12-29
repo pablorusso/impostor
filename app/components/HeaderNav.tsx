@@ -28,9 +28,17 @@ const getInstalledState = () => {
 export default function HeaderNav() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
-  const [isInstalled, setIsInstalled] = useState(() => getInstalledState());
-  const [{ isMobileOrTablet, isIOS }] = useState(() => getDeviceInfo());
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [{ isMobileOrTablet, isIOS }, setDeviceInfo] = useState(() => ({
+    isMobileOrTablet: false,
+    isIOS: false
+  }));
   const [showIOSInstructions, setShowIOSInstructions] = useState(false);
+
+  useEffect(() => {
+    setDeviceInfo(getDeviceInfo());
+    setIsInstalled(getInstalledState());
+  }, []);
 
   useEffect(() => {
     // Verificar si ya está instalado

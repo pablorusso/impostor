@@ -26,6 +26,8 @@ export default function NewGamePage() {
   const [shareCategories, setShareCategories] = useState(true);
   const [allowAllKick, setAllowAllKick] = useState(true);
   const [isPublic, setIsPublic] = useState(false);
+  const [impostorMin, setImpostorMin] = useState(1);
+  const [impostorMax, setImpostorMax] = useState(1);
   const [hostName, setHostName] = useState('');
 
   useEffect(() => {
@@ -172,6 +174,12 @@ export default function NewGamePage() {
 
     const words = [...categoryWords, ...customWords];
 
+    if (impostorMin < 1 || impostorMax < impostorMin) {
+      setError('Impostores invalidos');
+      setLoading(false);
+      return;
+    }
+
     if (words.length === 0) {
       setError('Debe seleccionar al menos una categoría o escribir palabras');
       setLoading(false);
@@ -208,7 +216,9 @@ export default function NewGamePage() {
           words, 
           shareCategories,
           allowAllKick,
-          isPublic
+          isPublic,
+          impostorCountMin: impostorMin,
+          impostorCountMax: impostorMax
         }) 
       });
       if (!res.ok) throw new Error('Error creando partida');
@@ -227,6 +237,19 @@ export default function NewGamePage() {
       ...prev,
       [category]: !prev[category]
     }));
+  };
+
+  const handleImpostorMinChange = (value: string) => {
+    const parsed = Number(value);
+    const nextMin = Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : 1;
+    setImpostorMin(nextMin);
+    setImpostorMax(prev => Math.max(prev, nextMin));
+  };
+
+  const handleImpostorMaxChange = (value: string) => {
+    const parsed = Number(value);
+    const nextMax = Number.isFinite(parsed) ? Math.max(impostorMin, Math.floor(parsed)) : impostorMin;
+    setImpostorMax(nextMax);
   };
 
   return (
@@ -329,6 +352,31 @@ export default function NewGamePage() {
                 sx={{ fontSize: 14, margin: 0 }}
               />
             </FormGroup>
+            <Box sx={{ mt: 1 }}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                <TextField
+                  label="Impostores minimo"
+                  type="number"
+                  value={impostorMin}
+                  onChange={(e) => handleImpostorMinChange(e.target.value)}
+                  inputProps={{ min: 1 }}
+                  size="small"
+                  sx={{ bgcolor: '#fff', borderRadius: 1, flex: 1 }}
+                />
+                <TextField
+                  label="Impostores maximo"
+                  type="number"
+                  value={impostorMax}
+                  onChange={(e) => handleImpostorMaxChange(e.target.value)}
+                  inputProps={{ min: impostorMin }}
+                  size="small"
+                  sx={{ bgcolor: '#fff', borderRadius: 1, flex: 1 }}
+                />
+              </Stack>
+              <Typography sx={{ color: '#666', fontSize: 12, mt: 1 }}>
+                Minimo de jugadores para iniciar: {impostorMax + 2}
+              </Typography>
+            </Box>
           </Card>
 
           <Card sx={{ p: { xs: 2, sm: 3 }, boxShadow: 4, bgcolor: '#ffccbc' }}>

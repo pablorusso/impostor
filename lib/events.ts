@@ -9,6 +9,7 @@ export type GameEventType =
   | 'round-end'
   | 'round-next'
   | 'next-turn'
+  | 'impostor-found'
   | 'game-close';
 
 export interface GameEvent {
@@ -17,6 +18,7 @@ export interface GameEvent {
   timestamp: number;
   playerId?: string;
   roundId?: string;
+  allFound?: boolean;
 }
 
 /**

@@ -104,11 +104,13 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittingAction, setSubmittingAction] = useState<string | null>(null);
   const [isKicking, setIsKicking] = useState(false);
+  const [impostorNotice, setImpostorNotice] = useState<{ text: string; tone: 'info' | 'success' } | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const isSubmittingRef = useRef(false);
   const refreshAbortControllerRef = useRef<AbortController | null>(null);
   const refreshTokenRef = useRef(0);
   const hasInitializedNameRef = useRef(false);
+  const impostorNoticeTimeoutRef = useRef<number | null>(null);
 
   const playHapticFallback = useCallback(() => {
     try {
@@ -521,13 +523,31 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       }
     });
 
-    channel.bind('game-update', (data: any) => {
+    const handleGameUpdate = (data: any) => {
       console.log('[Pusher] Received "game-update" event:', data);
+      if (data?.type === 'impostor-found') {
+        const allFound = data?.allFound === true;
+        setImpostorNotice({
+          text: allFound
+            ? 'Se encontraron todos los impostores. Comienza una nueva ronda.'
+            : 'Se encontro un impostor. Aun quedan impostores.',
+          tone: allFound ? 'success' : 'info'
+        });
+        if (impostorNoticeTimeoutRef.current) {
+          window.clearTimeout(impostorNoticeTimeoutRef.current);
+        }
+        impostorNoticeTimeoutRef.current = window.setTimeout(() => {
+          setImpostorNotice(null);
+          impostorNoticeTimeoutRef.current = null;
+        }, 4000);
+      }
       // En lugar de actualizar el estado directamente con el payload,
       // refrescamos desde el servidor para obtener la vista de estado
       // personalizada y segura para este jugador.
       refresh();
-    });
+    };
+
+    channel.bind('game-update', handleGameUpdate);
 
     // Manejo de la conexión general
     PusherClient.connection.bind('connected', () => {
@@ -543,6 +563,11 @@ export default function GameLobby({ params }: { params: { code: string } }) {
 
     return () => {
       console.log('[Pusher] Disconnecting...');
+      channel.unbind('game-update', handleGameUpdate);
+      if (impostorNoticeTimeoutRef.current) {
+        window.clearTimeout(impostorNoticeTimeoutRef.current);
+        impostorNoticeTimeoutRef.current = null;
+      }
       PusherClient.disconnect();
     };
   }, [code, playerId, refresh, setConnectionStatus, setRetryCount]);
@@ -669,7 +694,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     }
   }
   async function nextTurn() {
-    if (!state || !state.currentTurnPlayer || isSubmitting || isSubmittingRef.current) return;
+    if (!state || !state.isHost || !state.currentTurnPlayer || isSubmitting || isSubmittingRef.current) return;
 
     if (refreshAbortControllerRef.current) {
       refreshAbortControllerRef.current.abort();
@@ -723,7 +748,11 @@ export default function GameLobby({ params }: { params: { code: string } }) {
     });
 
     try {
-      const res = await fetch(`/api/game/${code}/next-turn`, { method: 'POST' });
+      const res = await fetch(`/api/game/${code}/next-turn`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerId })
+      });
       if (!res.ok) {
         console.warn('[Optimistic] Next turn failed on server, reverting state.');
         setState(originalState); // Revert to pre-optimistic state on failure
@@ -737,6 +766,28 @@ export default function GameLobby({ params }: { params: { code: string } }) {
       // The submitting state can be safely turned off.
       setIsSubmitting(false);
       isSubmittingRef.current = false;
+      setSubmittingAction(null);
+    }
+  }
+  async function reportImpostorFound() {
+    if (!state || !state.isHost || isSubmitting) return;
+    setIsSubmitting(true);
+    setSubmittingAction('impostor-found');
+    try {
+      const res = await fetch(`/api/game/${code}/impostor-found`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerId })
+      });
+      if (!res.ok) {
+        console.warn('Failed to report impostor found');
+        refresh();
+      }
+    } catch (error) {
+      console.error('Failed to report impostor found:', error);
+      refresh();
+    } finally {
+      setIsSubmitting(false);
       setSubmittingAction(null);
     }
   }
@@ -871,6 +922,13 @@ export default function GameLobby({ params }: { params: { code: string } }) {
   const showJoinForm = !playerId && !joining && !autoJoining;
   const showRecoveringState = !!(playerId && !state && !initializing);
   const allowAllKick = state?.game?.allowAllKick !== false;
+  const rawImpostorMin = Number(state?.game?.impostorCountMin);
+  const rawImpostorMax = Number(state?.game?.impostorCountMax);
+  const safeImpostorMin = Number.isFinite(rawImpostorMin) ? Math.max(1, Math.floor(rawImpostorMin)) : 1;
+  const safeImpostorMax = Number.isFinite(rawImpostorMax) ? Math.max(1, Math.floor(rawImpostorMax)) : safeImpostorMin;
+  const maxImpostors = Math.max(safeImpostorMin, safeImpostorMax);
+  const minPlayersToStart = maxImpostors + 2;
+  const showImpostorButton = safeImpostorMin !== safeImpostorMax;
   useEffect(() => {
     const wordIsVisible = isRoundActive && !wordRevealing && countdown === 0 && !!wordVisible;
     if (wordIsVisible && !hasVibratedForWord) {
@@ -1097,13 +1155,13 @@ export default function GameLobby({ params }: { params: { code: string } }) {
                     size="large"
                     sx={{ fontSize: 20, px: 4, py: 1.5, borderRadius: 3 }}
                     onClick={startRound}
-                    disabled={state.game.players.length < 3 || isSubmitting || isKicking}
+                    disabled={state.game.players.length < minPlayersToStart || isSubmitting || isKicking}
                   >
                     {submittingAction === 'start' ? '⏳ Iniciando...' : '🎯 Iniciar Partida'}
                   </Button>
-                  {state.game.players.length < 3 && (
+                  {state.game.players.length < minPlayersToStart && (
                     <Typography variant="caption" sx={{ color: '#e64a19', mt: 1 }}>
-                      Se necesitan al menos 3 jugadores para iniciar la partida.
+                      Se necesitan al menos {minPlayersToStart} jugadores para iniciar la partida.
                     </Typography>
                   )}
                 </Stack>
@@ -1121,6 +1179,22 @@ export default function GameLobby({ params }: { params: { code: string } }) {
             <Typography variant="h6" sx={{ fontWeight: 700, color: '#e64a19', mb: 2 }}>
               🧑‍🤝‍🧑 Jugadores
             </Typography>
+            {impostorNotice && (
+              <Box
+                sx={{
+                  mb: 2,
+                  p: 1.5,
+                  borderRadius: 2,
+                  border: '1px solid',
+                  borderColor: impostorNotice.tone === 'success' ? '#4caf50' : '#90caf9',
+                  bgcolor: impostorNotice.tone === 'success' ? '#e8f5e8' : '#e3f2fd'
+                }}
+              >
+                <Typography sx={{ color: impostorNotice.tone === 'success' ? '#2e7d32' : '#1565c0', fontSize: 14, textAlign: 'center' }}>
+                  {impostorNotice.text}
+                </Typography>
+              </Box>
+            )}
 
             <Box
               sx={{
@@ -1237,16 +1311,36 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               </Box>
             )}
           </Box>
-          <Button
-            variant="contained"
-            color="success"
-            size="large"
-            sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%', mt: 1 }}
-            onClick={nextTurn}
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? '⏳...' : 'Siguiente jugador'}
-          </Button>
+          {state.isHost ? (
+            <Stack spacing={1} sx={{ mt: 1 }}>
+              <Button
+                variant="contained"
+                color="success"
+                size="large"
+                sx={{ fontSize: 18, px: 3, py: 1.5, borderRadius: 3, width: '100%' }}
+                onClick={nextTurn}
+                disabled={isSubmitting}
+              >
+                {submittingAction === 'next-turn' && isSubmitting ? '?...' : 'Siguiente jugador'}
+              </Button>
+              {showImpostorButton && (
+                <Button
+                  variant="contained"
+                  color="warning"
+                  size="large"
+                  sx={{ fontSize: 18, px: 3, py: 1.4, borderRadius: 3, width: '100%' }}
+                  onClick={reportImpostorFound}
+                  disabled={isSubmitting}
+                >
+                  {submittingAction === 'impostor-found' && isSubmitting ? '?...' : 'Impostor encontrado'}
+                </Button>
+              )}
+            </Stack>
+          ) : (
+            <Typography sx={{ color: '#616161', textAlign: 'center', mt: 1 }}>
+              Esperando que el host pase de turno...
+            </Typography>
+          )}
         </Card>
       )}
 
@@ -1385,7 +1479,7 @@ export default function GameLobby({ params }: { params: { code: string } }) {
               <ListItemText primary="Cada palabra rota el orden: quien empezaba pasa al final." />
             </ListItem>
             <ListItem>
-              <ListItemText primary="El jugador activo (y el host) pueden pasar al siguiente turno." />
+              <ListItemText primary="Solo el host puede pasar al siguiente turno." />
             </ListItem>
             <ListItem>
               <ListItemText primary="Conversen y traten de descubrir al impostor." />
